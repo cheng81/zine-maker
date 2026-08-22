@@ -1,51 +1,51 @@
-import { openDB } from 'idb';
-
-const DB_NAME = 'ZineMakerDB';
-const ASSETS = 'assets';
-const PROJECTS = 'projects';
+import {
+  ASSETS_STORE_NAME,
+  FONTS_STORE_NAME,
+  openZineDatabase,
+  PROJECTS_STORE_NAME,
+} from '@/utils/database';
 
 export async function exportAll(): Promise<any> {
-  const db = await openDB(DB_NAME, 2);
-  const projects = await db.getAll(PROJECTS);
-  const assets = await db.getAll(ASSETS);
-  // Convert File objects in assets to base64 for portability
-  const serializedAssets = await Promise.all(
-    assets.map(async (a: any) => {
-      const file: File | undefined = a?.file;
-      if (!file) return a;
-      const b64 = await fileToBase64(file);
-      return { ...a, file: { name: file.name, type: file.type, dataUrl: b64 } };
-    })
-  );
-  return { projects, assets: serializedAssets };
+  const db = await openZineDatabase();
+  const projects = await db.getAll(PROJECTS_STORE_NAME);
+  const assets = await db.getAll(ASSETS_STORE_NAME);
+  const fonts = await db.getAll(FONTS_STORE_NAME);
+  return {
+    projects,
+    assets: await Promise.all(assets.map(serializeStoredFile)),
+    fonts: await Promise.all(fonts.map(serializeStoredFile)),
+  };
 }
 
 export async function importAll(payload: any): Promise<void> {
-  const db = await openDB(DB_NAME, 2);
-  const txP = db.transaction(PROJECTS, 'readwrite');
-  const txA = db.transaction(ASSETS, 'readwrite');
+  const db = await openZineDatabase();
+  const txP = db.transaction(PROJECTS_STORE_NAME, 'readwrite');
   // Clear existing stores? We will append to avoid destructive overwrite
   const projects = Array.isArray(payload?.projects) ? payload.projects : [];
   const assets = Array.isArray(payload?.assets) ? payload.assets : [];
+  const fonts = Array.isArray(payload?.fonts) ? payload.fonts : [];
   for (const p of projects) {
     await (txP.store as any).put(p);
   }
+  await txP.done;
+
+  const txA = db.transaction(ASSETS_STORE_NAME, 'readwrite');
   for (const a of assets) {
-    const f = a?.file;
-    if (f && f.dataUrl) {
-      const file = dataUrlToFile(f.dataUrl, f.name || 'asset');
-      await (txA.store as any).put({ id: a.id, file });
-    } else {
-      await (txA.store as any).put(a);
-    }
+    await (txA.store as any).put(deserializeStoredFile(a, 'asset'));
   }
-  await txP.done; await txA.done;
+  await txA.done;
+
+  const txF = db.transaction(FONTS_STORE_NAME, 'readwrite');
+  for (const font of fonts) {
+    await (txF.store as any).put(deserializeStoredFile(font, 'font'));
+  }
+  await txF.done;
 }
 
 // Export a single project and only the assets it uses
 export async function exportProjectById(projectId: string): Promise<any> {
-  const db = await openDB(DB_NAME, 2);
-  const project: any = await db.get(PROJECTS, projectId);
+  const db = await openZineDatabase();
+  const project: any = await db.get(PROJECTS_STORE_NAME, projectId);
   if (!project) throw new Error('Project not found');
 
   // Collect unique asset ids referenced by the project (image contents)
@@ -63,7 +63,7 @@ export async function exportProjectById(projectId: string): Promise<any> {
 
   const assets: any[] = [];
   for (const id of assetIds) {
-    const a: any = await db.get(ASSETS, id);
+    const a: any = await db.get(ASSETS_STORE_NAME, id);
     if (!a) continue;
     const file: File | undefined = a?.file;
     if (file) {
@@ -73,29 +73,65 @@ export async function exportProjectById(projectId: string): Promise<any> {
       assets.push(a);
     }
   }
-  return { project, assets };
+
+  const fontFamilies = new Set<string>();
+  (project.pages || []).forEach((page: any) => {
+    (page.content || []).forEach((content: any) => {
+      if (content?.type === 'text' && typeof content?.properties?.fontFamily === 'string') {
+        fontFamilies.add(content.properties.fontFamily);
+      }
+    });
+  });
+  const storedFonts = await db.getAll(FONTS_STORE_NAME);
+  const fonts = await Promise.all(
+    storedFonts
+      .filter((font: any) => fontFamilies.has(font.family))
+      .map(serializeStoredFile)
+  );
+
+  return { project, assets, fonts };
 }
 
 // Import a single project (and optional serialized assets)
 export async function importProject(payload: any): Promise<void> {
-  const db = await openDB(DB_NAME, 2);
-  const txP = db.transaction(PROJECTS, 'readwrite');
+  const db = await openZineDatabase();
+  const txP = db.transaction(PROJECTS_STORE_NAME, 'readwrite');
   await (txP.store as any).put(payload.project);
   await txP.done;
 
   if (Array.isArray(payload.assets) && payload.assets.length) {
-    const txA = db.transaction(ASSETS, 'readwrite');
+    const txA = db.transaction(ASSETS_STORE_NAME, 'readwrite');
     for (const a of payload.assets) {
-      const f = a?.file;
-      if (f && f.dataUrl) {
-        const file = dataUrlToFile(f.dataUrl, f.name || 'asset');
-        await (txA.store as any).put({ id: a.id, file });
-      } else {
-        await (txA.store as any).put(a);
-      }
+      await (txA.store as any).put(deserializeStoredFile(a, 'asset'));
     }
     await txA.done;
   }
+
+  if (Array.isArray(payload.fonts) && payload.fonts.length) {
+    const txF = db.transaction(FONTS_STORE_NAME, 'readwrite');
+    for (const font of payload.fonts) {
+      await (txF.store as any).put(deserializeStoredFile(font, 'font'));
+    }
+    await txF.done;
+  }
+}
+
+async function serializeStoredFile(record: any): Promise<any> {
+  const file: File | undefined = record?.file;
+  if (!file) return record;
+  return {
+    ...record,
+    file: { name: file.name, type: file.type, dataUrl: await fileToBase64(file) },
+  };
+}
+
+function deserializeStoredFile(record: any, fallbackName: string): any {
+  const serializedFile = record?.file;
+  if (!serializedFile?.dataUrl) return record;
+  return {
+    ...record,
+    file: dataUrlToFile(serializedFile.dataUrl, serializedFile.name || fallbackName),
+  };
 }
 
 function fileToBase64(file: File): Promise<string> {
@@ -116,5 +152,3 @@ function dataUrlToFile(dataUrl: string, filename: string): File {
   while (n--) u8arr[n] = bstr.charCodeAt(n);
   return new File([u8arr], filename, { type: mime });
 }
-
-

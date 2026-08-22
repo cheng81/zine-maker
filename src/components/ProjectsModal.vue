@@ -66,6 +66,7 @@
 import { onMounted, onUnmounted, ref } from 'vue';
 import { useProjectStore } from '@/stores/project';
 import { useUIStore } from '@/stores/ui';
+import { useFontStore } from '@/stores/fontStore';
 import { getAllProjects, loadProject, deleteProject, renameProject, saveProject } from '@/utils/persistence';
 import type { ZineProject } from '@/types';
 import { Download } from 'lucide-vue-next';
@@ -73,6 +74,7 @@ import { Download } from 'lucide-vue-next';
 const emit = defineEmits<{ (e: 'close'): void }>();
 const uiStore = useUIStore();
 const projectStore = useProjectStore();
+const fontStore = useFontStore();
 
 const projects = ref<ZineProject[]>([]);
 let onKey: ((e: KeyboardEvent) => void) | null = null;
@@ -139,6 +141,7 @@ async function importAll(e: Event) {
     const data = JSON.parse(text);
     const { importAll } = await import('@/utils/portableBackup');
     await importAll(data);
+    await fontStore.initialize(true);
     await refresh();
     alert('Imported successfully.');
   } catch (err) {
@@ -157,6 +160,7 @@ async function importSingle(e: Event) {
     const data = JSON.parse(text);
     const { importProject } = await import('@/utils/portableBackup');
     await importProject(data);
+    await fontStore.initialize(true);
     await refresh();
     alert('Project imported successfully.');
   } catch (err) {

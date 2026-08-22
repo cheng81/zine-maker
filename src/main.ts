@@ -9,6 +9,7 @@ import './style.css'
 // Import page components
 import ZineMaker from './pages/ZineMaker.vue'
 import MarkdownEditor from './pages/MarkdownEditor.vue'
+import { useFontStore } from './stores/fontStore'
 
 const routes = [
   { path: '/', component: ZineMaker },
@@ -26,4 +27,14 @@ const pinia = createPinia()
 app.use(pinia)
 app.use(VueKonva)
 app.use(router)
-app.mount('#app')
+
+async function bootstrap() {
+  try {
+    await useFontStore(pinia).initialize()
+  } catch (error) {
+    console.error('Failed to initialize custom fonts:', error)
+  }
+  app.mount('#app')
+}
+
+void bootstrap()

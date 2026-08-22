@@ -1,8 +1,6 @@
-import { openDB, type IDBPDatabase } from 'idb';
+import type { IDBPDatabase } from 'idb';
 import type { ZineProject } from '@/types';
-
-const DB_NAME = 'ZineMakerDB';
-const PROJECTS_STORE_NAME = 'projects';
+import { openZineDatabase, PROJECTS_STORE_NAME } from '@/utils/database';
 const LAST_PROJECT_ID_KEY = 'lastOpenProjectId';
 
 let db: IDBPDatabase | null = null;
@@ -10,20 +8,7 @@ let db: IDBPDatabase | null = null;
 async function getDb(): Promise<IDBPDatabase> {
   if (db) return db;
 
-  db = await openDB(DB_NAME, 2, {
-    upgrade(database, oldVersion) {
-      if (oldVersion < 1) {
-        if (!database.objectStoreNames.contains('assets')) {
-          database.createObjectStore('assets', { keyPath: 'id', autoIncrement: true });
-        }
-      }
-      if (oldVersion < 2) {
-        if (!database.objectStoreNames.contains(PROJECTS_STORE_NAME)) {
-          database.createObjectStore(PROJECTS_STORE_NAME, { keyPath: 'id' });
-        }
-      }
-    },
-  });
+  db = await openZineDatabase();
   return db;
 }
 

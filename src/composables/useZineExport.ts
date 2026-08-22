@@ -24,6 +24,9 @@ export async function exportZineForTemplate(
   const currentTemplate = templatesStore.getTemplate(project.template.id);
   const template = currentTemplate || project.template as ZineTemplate;
 
+  // Canvas text metrics are only reliable once all registered custom fonts are ready.
+  await document.fonts.ready;
+
   const width = template.printLayout.sheetWidth;
   const height = template.printLayout.sheetHeight;
   const pixelRatio = options.pixelRatio ?? 2;
@@ -298,5 +301,4 @@ export async function generatePDF(images: string[], width: number, height: numbe
   });
   return pdf.output('datauristring');
 }
-
 
