@@ -6,7 +6,8 @@
         <label>Source</label>
         <div class="image-source">
           <div class="image-preview">
-            <img :src="imageProps.src" :alt="imageProps.alt" />
+            <img v-if="previewSrc" :src="previewSrc" :alt="imageProps.alt" />
+            <ImageOff v-else :size="22" />
           </div>
           <div class="image-info">
             <input 
@@ -16,11 +17,12 @@
               ref="fileInput"
               class="hidden-input"
             />
-            <button @click="selectNewImage" class="change-button">
-              Change Image
+            <button @click="selectNewImage" class="change-button" :disabled="changingImage">
+              {{ changingImage ? 'Loading...' : 'Change Image' }}
             </button>
           </div>
         </div>
+        <p v-if="imageError" class="image-error" role="alert">{{ imageError }}</p>
       </div>
 
       <div class="property-group">
@@ -85,9 +87,11 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, onUnmounted, ref, watch } from 'vue';
 import type { ZineContent, ImageProperties } from '@/types';
 import { useProjectStore } from '@/stores/project';
+import { useAssetStore } from '@/stores/assetStore';
+import { ImageOff } from 'lucide-vue-next';
 
 interface Props {
   content: ZineContent;
@@ -101,9 +105,26 @@ const props = defineProps<Props>();
 const emit = defineEmits<Emits>();
 
 const projectStore = useProjectStore();
+const assetStore = useAssetStore();
 const fileInput = ref<HTMLInputElement | null>(null);
+const previewSrc = ref('');
+const changingImage = ref(false);
+const imageError = ref('');
+let previewObjectUrl: string | null = null;
+let previewRequest = 0;
 
 const imageProps = computed(() => props.content.properties as ImageProperties);
+
+watch(
+  () => [imageProps.value.assetId, imageProps.value.src] as const,
+  () => loadPreview(),
+  { immediate: true }
+);
+
+onUnmounted(() => {
+  previewRequest++;
+  revokePreviewUrl();
+});
 
 function updateProperty(key: keyof ImageProperties, value: any) {
   emit('update', props.content.id, {
@@ -121,18 +142,59 @@ function selectNewImage() {
   fileInput.value?.click();
 }
 
-function handleImageChange(event: Event) {
+async function handleImageChange(event: Event) {
   const target = event.target as HTMLInputElement;
   const file = target.files?.[0];
-  
-  if (file) {
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const src = e.target?.result as string;
-      updateProperty('src', src);
-    };
-    reader.readAsDataURL(file);
+  if (!file) return;
+
+  changingImage.value = true;
+  imageError.value = '';
+  try {
+    const result = await assetStore.addAssets([file]);
+    const asset = result.assets[0];
+    if (!asset) throw new Error(result.failures[0]?.reason || 'Image could not be loaded.');
+    projectStore.addAssetsToCatalog([asset.id]);
+    emit('update', props.content.id, {
+      properties: {
+        ...imageProps.value,
+        src: '',
+        assetId: asset.id,
+        alt: file.name,
+      }
+    });
+  } catch (error) {
+    imageError.value = error instanceof Error ? error.message : 'Image could not be changed.';
+  } finally {
+    changingImage.value = false;
+    target.value = '';
   }
+}
+
+async function loadPreview() {
+  const request = ++previewRequest;
+  revokePreviewUrl();
+  previewSrc.value = '';
+  imageError.value = '';
+
+  const assetId = imageProps.value.assetId;
+  if (typeof assetId === 'number') {
+    try {
+      const file = await assetStore.getAsset(assetId);
+      if (request !== previewRequest || !file) return;
+      previewObjectUrl = URL.createObjectURL(file);
+      previewSrc.value = previewObjectUrl;
+    } catch {
+      if (request === previewRequest) imageError.value = 'Image preview could not be loaded.';
+    }
+    return;
+  }
+  if (request === previewRequest) previewSrc.value = imageProps.value.src;
+}
+
+function revokePreviewUrl() {
+  if (!previewObjectUrl) return;
+  URL.revokeObjectURL(previewObjectUrl);
+  previewObjectUrl = null;
 }
 
 function resetImage() {
@@ -239,6 +301,15 @@ label {
 
 .change-button:hover {
   background: #e5e7eb;
+}
+
+.change-button:disabled { opacity: 0.65; cursor: wait; }
+
+.image-error {
+  margin: 0.4rem 0 0;
+  color: #b91c1c;
+  font-size: 0.75rem;
+  line-height: 1.3;
 }
 
 .text-input {

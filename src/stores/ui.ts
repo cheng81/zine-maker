@@ -5,7 +5,6 @@ export const useUIStore = defineStore('ui', () => {
   const showTemplateSelector = ref(true);
   const showPageList = ref(true);
   const showProperties = ref(true);
-  const showImageUploadModal = ref(false);
   const showExportModal = ref(false);
   const showProjectsModal = ref(false);
   const exportImageData = ref('');
@@ -22,6 +21,7 @@ export const useUIStore = defineStore('ui', () => {
   const showFoldMarks = ref(true);
   const showCutMarks = ref(true);
   const showStorageNotice = ref(false);
+  const leftSidebarTab = ref<'pages' | 'images'>('pages');
 
   function hideTemplateSelector(): void {
     showTemplateSelector.value = false;
@@ -61,6 +61,11 @@ export const useUIStore = defineStore('ui', () => {
   function togglePageListCollapsed(): void {
     pageListCollapsed.value = !pageListCollapsed.value;
   }
+  function openImageCatalog(): void {
+    showPageList.value = true;
+    pageListCollapsed.value = false;
+    leftSidebarTab.value = 'images';
+  }
   function togglePropertiesCollapsed(): void {
     propertiesCollapsed.value = !propertiesCollapsed.value;
   }
@@ -76,7 +81,6 @@ export const useUIStore = defineStore('ui', () => {
     showTemplateSelector,
     showPageList,
     showProperties,
-    showImageUploadModal,
     showExportModal,
     showProjectsModal,
     exportImageData,
@@ -93,6 +97,7 @@ export const useUIStore = defineStore('ui', () => {
     showFoldMarks,
     showCutMarks,
     showStorageNotice,
+    leftSidebarTab,
     hideTemplateSelector,
     showTemplateSelectorModal,
     openProjectsModal,
@@ -103,6 +108,7 @@ export const useUIStore = defineStore('ui', () => {
     setCanvasOffset,
     requestFit,
     togglePageListCollapsed,
+    openImageCatalog,
     togglePropertiesCollapsed,
     openStorageNotice,
     closeStorageNotice

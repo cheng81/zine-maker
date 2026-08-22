@@ -191,7 +191,8 @@ function handleToolClick(toolId: ToolType) {
   if (toolId === 'shape') {
     isShapePopoverVisible.value = !isShapePopoverVisible.value;
   } else if (toolId === 'image') {
-    uiStore.showImageUploadModal = true;
+    uiStore.openImageCatalog();
+    toolsStore.setActiveTool('select');
   } else {
     isShapePopoverVisible.value = false;
     toolsStore.setActiveTool(toolId);

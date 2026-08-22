@@ -1,10 +1,5 @@
 <template>
   <div class="zine-maker-page">
-    <ImageUploadModal 
-      :visible="uiStore.showImageUploadModal" 
-      @close="uiStore.showImageUploadModal = false"
-      @image-added="addImageToCanvas"
-    />
     <ExportModal 
       :visible="uiStore.showExportModal"
       :image-src="uiStore.exportImageData"
@@ -93,7 +88,6 @@ import AppLogo from '@/components/AppLogo.vue';
 import KonvaPageEditor from '@/components/KonvaPageEditor.vue';
 import PropertiesPanel from '@/components/properties/PropertiesPanel.vue';
 import PageList from '@/components/PageList.vue';
-import ImageUploadModal from '@/components/ImageUploadModal.vue';
 import ExportModal from '@/components/ExportModal.vue';
 import RssAudioPlayer from '@/components/RssAudioPlayer.vue';
 import { useProjectStore } from '@/stores/project';
@@ -102,13 +96,11 @@ import { useToolsStore } from '@/stores/tools';
 import { FilePlus, FolderOpen, Github, Save, Sidebar, Sliders, FileText } from 'lucide-vue-next';
 // @ts-ignore - Vue SFC type shim might be missing in this project setup
 import ProjectsModal from '@/components/ProjectsModal.vue';
-import { useAssetStore } from '@/stores/assetStore';
 import { getLastOpenProjectId, loadProject } from '@/utils/persistence';
 
 const projectStore = useProjectStore();
 const uiStore = useUIStore();
 const toolsStore = useToolsStore();
-const assetStore = useAssetStore();
 
 const theme = ref<'light'|'dark'>( (localStorage.getItem('theme') as any) || 'light');
 const isMobile = ref(false);
@@ -136,7 +128,6 @@ async function manualSave() {
 
 onMounted(async () => {
   setupKeyboardShortcuts();
-  await assetStore.initDB();
   applyTheme();
   updateIsMobile();
   window.addEventListener('resize', updateIsMobile);
@@ -199,7 +190,8 @@ function handleKeyDown(event: KeyboardEvent): void {
       event.preventDefault();
       break;
     case 'i':
-      toolsStore.setActiveTool('image');
+      uiStore.openImageCatalog();
+      toolsStore.setActiveTool('select');
       event.preventDefault();
       break;
     case 's':
@@ -266,54 +258,6 @@ function closeMobilePanels(): void {
   uiStore.propertiesCollapsed = true;
 }
 
-async function addImageToCanvas(assetId: number) {
-  const file = await assetStore.getAsset(assetId);
-  if (!file) return;
-
-  const src = URL.createObjectURL(file);
-
-  const { width, height } = await getImageDimensions(src);
-
-  const imageContent = {
-    type: 'image' as const,
-    x: 50,
-    y: 50,
-    width,
-    height,
-    rotation: 0,
-    zIndex: Date.now(),
-    properties: {
-      src,
-      alt: file.name,
-      opacity: 1,
-      assetId: assetId
-    }
-  };
-  projectStore.addContentToCurrentPage(imageContent);
-  toolsStore.setActiveTool('select');
-}
-
-function getImageDimensions(src: string): Promise<{ width: number; height: number }> {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.onload = () => {
-      resolve(scaleToFit(img.naturalWidth, img.naturalHeight));
-    };
-    img.onerror = reject;
-    img.src = src;
-  });
-}
-
-function scaleToFit(width: number, height: number, maxDimension = 300): { width: number; height: number } {
-  if (width <= maxDimension && height <= maxDimension) {
-    return { width, height };
-  }
-  const scale = Math.min(maxDimension / width, maxDimension / height);
-  return {
-    width: Math.round(width * scale),
-    height: Math.round(height * scale)
-  };
-}
 </script>
 
 <style>

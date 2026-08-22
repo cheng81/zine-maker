@@ -264,10 +264,24 @@ export async function createKonvaNode(content: ZineContent, getAsset: GetAssetFn
     return new Promise((resolve, reject) => {
       const imageObj = new window.Image();
       imageObj.crossOrigin = 'anonymous';
-      imageObj.onload = () => resolve(new Konva.Image({ ...common, image: imageObj, opacity: p.opacity }));
-      imageObj.onerror = () => reject(new Error(`Failed to load image from src: ${p.src}`));
+      let objectUrl: string | null = null;
+      imageObj.onload = () => {
+        if (objectUrl) URL.revokeObjectURL(objectUrl);
+        resolve(new Konva.Image({ ...common, image: imageObj, opacity: p.opacity }));
+      };
+      imageObj.onerror = () => {
+        if (objectUrl) URL.revokeObjectURL(objectUrl);
+        reject(new Error(`Failed to load image from src: ${p.src}`));
+      };
       if (p.assetId) {
-        getAsset(p.assetId).then(file => { if (file) imageObj.src = URL.createObjectURL(file); else reject(new Error(`Asset not found: ${p.assetId}`)); });
+        getAsset(p.assetId).then(file => {
+          if (file) {
+            objectUrl = URL.createObjectURL(file);
+            imageObj.src = objectUrl;
+          } else {
+            reject(new Error(`Asset not found: ${p.assetId}`));
+          }
+        });
       } else {
         imageObj.src = p.src;
       }
@@ -301,4 +315,3 @@ export async function generatePDF(images: string[], width: number, height: numbe
   });
   return pdf.output('datauristring');
 }
-

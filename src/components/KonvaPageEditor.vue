@@ -2,7 +2,7 @@
   <div class="konva-page-editor">
     <AppToolbar />
 
-    <div class="stage-wrapper" ref="stageWrapper">
+    <div class="stage-wrapper" ref="stageWrapper" @dragover="onAssetDragOver" @drop="onAssetDrop">
       <div class="canvas-container resizable" ref="canvasContainer">
         <v-stage
           ref="stageRef"
@@ -175,6 +175,7 @@ import type { TextProperties, ImageProperties, ShapeProperties } from '@/types';
 import Konva from 'konva';
 import AppToolbar from './AppToolbar.vue';
 import { useUIStore } from '@/stores/ui';
+import { getDraggedAssetId, hasDraggedAsset } from '@/utils/imageDrag';
 
 const projectStore = useProjectStore();
 const toolsStore = useToolsStore();
@@ -326,10 +327,11 @@ watch(() => projectStore.currentPage?.content, async (content) => {
       if (p.assetId) {
         const file = await assetStore.getAsset(p.assetId);
         if (file) {
-          imageObj.src = URL.createObjectURL(file);
+          const objectUrl = URL.createObjectURL(file);
+          await loadImage(imageObj, objectUrl, () => URL.revokeObjectURL(objectUrl)).catch(() => undefined);
         }
       } else {
-        imageObj.src = p.src;
+        await loadImage(imageObj, p.src).catch(() => undefined);
       }
 
       return {
@@ -1411,6 +1413,49 @@ function onStageClick(e: any) {
   } else if (toolsStore.activeTool === 'shape') {
     addShape(relativePos.x, relativePos.y);
   }
+}
+
+function loadImage(image: HTMLImageElement, src: string, cleanup?: () => void): Promise<void> {
+  return new Promise((resolve, reject) => {
+    image.onload = () => {
+      cleanup?.();
+      resolve();
+    };
+    image.onerror = () => {
+      cleanup?.();
+      reject(new Error('Image could not be loaded'));
+    };
+    image.src = src;
+  });
+}
+
+function onAssetDragOver(event: DragEvent) {
+  if (!hasDraggedAsset(event)) return;
+  event.preventDefault();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
+}
+
+async function onAssetDrop(event: DragEvent) {
+  const assetId = getDraggedAssetId(event);
+  if (assetId == null || !projectStore.currentPage) return;
+  event.preventDefault();
+
+  const stage = stageRef.value?.getNode?.() as Konva.Stage | undefined;
+  if (!stage) return;
+  stage.setPointersPositions(event);
+  const pointer = stage.getPointerPosition();
+  if (!pointer) return;
+  const stagePoint = toStagePoint(stage, pointer);
+  const page = pageBackgroundConfig.value;
+  const center = { x: stagePoint.x - page.x, y: stagePoint.y - page.y };
+  if (center.x < 0 || center.y < 0 || center.x > page.width || center.y > page.height) return;
+
+  const asset = await assetStore.getAssetRecord(assetId);
+  if (!asset) return;
+  const contentId = projectStore.addImageAssetToPage(projectStore.currentPage.id, asset, center);
+  if (!contentId) return;
+  projectStore.selectContent(contentId);
+  toolsStore.setActiveTool('select');
 }
 
 function addText(x: number, y: number) {

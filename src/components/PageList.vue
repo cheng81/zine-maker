@@ -1,64 +1,97 @@
 <template>
   <div class="page-list" :class="{ collapsed: uiStore.pageListCollapsed }">
     <div class="page-list-header">
-      <h3>Pages</h3>
-      <span class="page-count">{{ projectStore.pageCount }} pages</span>
+      <div class="sidebar-tabs">
+        <button
+          class="sidebar-tab"
+          :class="{ active: uiStore.leftSidebarTab === 'pages' }"
+          @click="uiStore.leftSidebarTab = 'pages'"
+          @dragenter="onPagesTabDragEnter"
+          @dragleave="cancelTabSwitch"
+        >Pages</button>
+        <button
+          class="sidebar-tab"
+          :class="{ active: uiStore.leftSidebarTab === 'images' }"
+          @click="uiStore.leftSidebarTab = 'images'"
+        >Images</button>
+      </div>
+      <span class="page-count">
+        {{ uiStore.leftSidebarTab === 'pages' ? `${projectStore.pageCount} pages` : `${projectStore.currentProject?.assetIds?.length || 0} images` }}
+      </span>
       <button class="collapse-button" @click="uiStore.togglePageListCollapsed()">
         <ChevronRight v-if="uiStore.pageListCollapsed" :size="20" />
         <ChevronDown v-else :size="20" />
       </button>
     </div>
 
-    <div class="pages-grid" ref="pagesGridRef">
-      <div 
-        v-for="(page, index) in projectStore.currentProject?.pages" 
-        :key="page.id"
-        class="page-item"
-        :class="{ active: index === projectStore.currentPageIndex }"
-        @click="projectStore.setCurrentPage(index)"
-      >
-        <div class="page-preview">
-          <div class="page-number">{{ page.pageNumber }}</div>
-          <div class="page-content-preview">
-            <div class="mini-page">
-              <div class="mini-content" v-for="(_, i) in page.content.slice(0,4)" :key="i" :style="{ width: (24 + (i%3)*18) + '%'}"></div>
+    <div v-show="uiStore.leftSidebarTab === 'pages'" class="sidebar-pane pages-pane">
+      <div class="pages-grid" ref="pagesGridRef">
+        <div
+          v-for="(page, index) in projectStore.currentProject?.pages"
+          :key="page.id"
+          class="page-item"
+          :class="{
+            active: index === projectStore.currentPageIndex,
+            'asset-drop-target': dropTargetPageId === page.id,
+          }"
+          @click="projectStore.setCurrentPage(index)"
+          @dragover="onPageDragOver(page.id, $event)"
+          @dragleave="onPageDragLeave(page.id)"
+          @drop.stop="onPageAssetDrop(page.id, index, $event)"
+        >
+          <div class="page-preview">
+            <div class="page-number">{{ page.pageNumber }}</div>
+            <div class="page-content-preview">
+              <div class="mini-page">
+                <div class="mini-content" v-for="(_, i) in page.content.slice(0,4)" :key="i" :style="{ width: (24 + (i%3)*18) + '%'}"></div>
+              </div>
             </div>
           </div>
+          <div class="page-info">
+            <div class="page-title" @dblclick.stop="startEdit(page)" v-if="editingId !== page.id">{{ pageTitle(page) }}</div>
+            <input v-else class="title-input" :value="editValue" @input="onEditInput($event)" @keydown.enter.prevent="commitEdit(page)" @keydown.esc.prevent="cancelEdit" @blur="commitEdit(page)" />
+            <div class="page-stats">{{ page.content.length }} items</div>
+          </div>
         </div>
-        <div class="page-info">
-          <div class="page-title" @dblclick.stop="startEdit(page)" v-if="editingId !== page.id">{{ pageTitle(page) }}</div>
-          <input v-else class="title-input" :value="editValue" @input="onEditInput($event)" @keydown.enter.prevent="commitEdit(page)" @keydown.esc.prevent="cancelEdit" @blur="commitEdit(page)" />
-          <div class="page-stats">{{ page.content.length }} items</div>
+      </div>
+
+      <div class="page-actions">
+        <div class="export-options">
+          <label><input type="checkbox" v-model="uiStore.showPageNumbers" /> Page numbers</label>
+          <label><input type="checkbox" v-model="uiStore.showFoldMarks" /> Fold marks</label>
+          <label><input type="checkbox" v-model="uiStore.showCutMarks" /> Cut marks</label>
         </div>
+        <button @click="exportZine" class="export-button export-button--green">Export Zine for Printing</button>
       </div>
     </div>
 
-    <div class="page-actions">
-      <div class="export-options">
-        <label><input type="checkbox" v-model="uiStore.showPageNumbers" /> Page numbers</label>
-        <label><input type="checkbox" v-model="uiStore.showFoldMarks" /> Fold marks</label>
-        <label><input type="checkbox" v-model="uiStore.showCutMarks" /> Cut marks</label>
-      </div>
-      <button @click="exportZine" class="export-button export-button--green">Export Zine for Printing</button>
+    <div v-show="uiStore.leftSidebarTab === 'images'" class="sidebar-pane images-pane">
+      <ImageCatalog />
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue';
+import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { useSortable } from '@vueuse/integrations/useSortable';
 import { useProjectStore } from '@/stores/project';
 import { useUIStore } from '@/stores/ui';
 import { useAssetStore } from '@/stores/assetStore';
 import { exportZineForTemplate } from '@/composables/useZineExport';
 import { ChevronRight, ChevronDown } from 'lucide-vue-next';
+import ImageCatalog from '@/components/ImageCatalog.vue';
+import { getDraggedAssetId, hasDraggedAsset } from '@/utils/imageDrag';
+import { useToolsStore } from '@/stores/tools';
 
 const projectStore = useProjectStore();
 const uiStore = useUIStore();
 const assetStore = useAssetStore();
+const toolsStore = useToolsStore();
 
 const editingId = ref<string | null>(null);
 const editValue = ref('');
+const dropTargetPageId = ref<string | null>(null);
+let tabSwitchTimer: ReturnType<typeof setTimeout> | null = null;
 
 const pagesGridRef = ref<HTMLElement | null>(null);
 const pageIds = computed(() => projectStore.currentProject?.pages.map(p => p.id) ?? []);
@@ -103,6 +136,62 @@ function commitEdit(page: any): void {
 }
 function cancelEdit(): void { editingId.value = null; }
 
+function onPagesTabDragEnter(event: DragEvent) {
+  if (!hasDraggedAsset(event) || uiStore.leftSidebarTab === 'pages') return;
+  event.preventDefault();
+  cancelTabSwitch();
+  tabSwitchTimer = setTimeout(() => {
+    uiStore.leftSidebarTab = 'pages';
+    tabSwitchTimer = null;
+  }, 350);
+}
+
+function cancelTabSwitch() {
+  if (tabSwitchTimer) clearTimeout(tabSwitchTimer);
+  tabSwitchTimer = null;
+}
+
+function onPageDragOver(pageId: string, event: DragEvent) {
+  if (!hasDraggedAsset(event)) return;
+  event.preventDefault();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
+  dropTargetPageId.value = pageId;
+}
+
+function onPageDragLeave(pageId: string) {
+  if (dropTargetPageId.value === pageId) dropTargetPageId.value = null;
+}
+
+async function onPageAssetDrop(pageId: string, pageIndex: number, event: DragEvent) {
+  const assetId = getDraggedAssetId(event);
+  dropTargetPageId.value = null;
+  if (assetId == null) return;
+  event.preventDefault();
+  const asset = await assetStore.getAssetRecord(assetId);
+  if (!asset) return;
+  const contentId = projectStore.addImageAssetToPage(pageId, asset);
+  if (!contentId) return;
+  projectStore.setCurrentPage(pageIndex);
+  projectStore.selectContent(contentId);
+  toolsStore.setActiveTool('select');
+}
+
+function clearAssetDragState() {
+  cancelTabSwitch();
+  dropTargetPageId.value = null;
+}
+
+onMounted(() => {
+  window.addEventListener('dragend', clearAssetDragState);
+  window.addEventListener('drop', clearAssetDragState);
+});
+
+onUnmounted(() => {
+  clearAssetDragState();
+  window.removeEventListener('dragend', clearAssetDragState);
+  window.removeEventListener('drop', clearAssetDragState);
+});
+
 async function exportZine(): Promise<void> {
   if (!projectStore.currentProject) {
     console.error('No current project to export.');
@@ -132,7 +221,6 @@ async function exportZine(): Promise<void> {
   }
 }
 
-// generatePDF moved to composable
 </script>
 
 <style scoped>
@@ -145,8 +233,7 @@ async function exportZine(): Promise<void> {
   border-right: 1px solid var(--border-soft);
 }
 .page-list.collapsed { width: 40px; }
-.page-list.collapsed .pages-grid, .page-list.collapsed .page-actions, .page-list.collapsed .page-count { display: none; }
-.page-list.collapsed .page-list-header h3 { display: none; }
+.page-list.collapsed .sidebar-pane, .page-list.collapsed .page-count, .page-list.collapsed .sidebar-tabs { display: none; }
 
 .page-list-header {
   display: flex;
@@ -157,12 +244,28 @@ async function exportZine(): Promise<void> {
   border-bottom: 1px solid var(--border-soft);
 }
 
-.page-list-header h3 {
-  margin: 0;
-  font-size: 1rem;
-  font-weight: 600;
-  color: var(--ui-ink);
+.sidebar-tabs {
+  display: flex;
+  gap: 0.2rem;
 }
+
+.sidebar-tab {
+  min-height: 32px;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--ui-ink);
+  cursor: pointer;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.sidebar-tab.active { border-color: var(--border); background: var(--surface); }
+
+.sidebar-pane { flex: 1; min-height: 0; }
+.pages-pane { display: flex; flex-direction: column; }
+.images-pane { overflow: hidden; }
 
 .page-count {
   color: var(--ui-ink);
@@ -236,6 +339,12 @@ async function exportZine(): Promise<void> {
   border-color: #000;
   box-shadow: 2px 2px 0 #000;
   background: #e7ffe7;
+}
+
+.page-item.asset-drop-target {
+  border-color: var(--accent-green);
+  background: #e7ffe7;
+  box-shadow: 2px 2px 0 #000;
 }
 
 .page-preview {

@@ -120,7 +120,8 @@ export interface ZineProject {
     description: string;
     tags: string[];
   };
-  formatVersion?: number; // 2 = new cover layout, undefined/1 = legacy
+  assetIds?: number[];
+  formatVersion?: number; // 3 = project image catalog, 2 = corrected cover layout
 }
 
 export interface ExportOptions {

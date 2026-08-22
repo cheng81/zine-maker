@@ -3,6 +3,8 @@ import { ref, computed, watch, toRaw } from 'vue';
 import type { ZineProject, ZinePage, ZineContent, ZineTemplate, ExportOptions } from '@/types';
 import { saveProject } from '@/utils/persistence';
 import { debounce } from 'lodash-es';
+import type { ImageAssetRecord } from '@/stores/assetStore';
+import { getAssetUsageCount, migrateProjectAssetCatalog } from '@/utils/projectAssets';
 
 export const useProjectStore = defineStore('project', () => {
   const currentProject = ref<ZineProject | null>(null);
@@ -129,7 +131,8 @@ export const useProjectStore = defineStore('project', () => {
         description: '',
         tags: []
       },
-      formatVersion: 2 // New projects use corrected cover layout
+      assetIds: [],
+      formatVersion: 3
     };
 
     currentPageIndex.value = 0;
@@ -143,6 +146,7 @@ export const useProjectStore = defineStore('project', () => {
     // Ensure dates are correctly revived from JSON serialization
     project.createdAt = new Date(project.createdAt);
     project.modifiedAt = new Date(project.modifiedAt);
+    migrateProjectAssetCatalog(project);
 
     // The migration now happens in persistence.ts when loading
     // This ensures it's saved immediately to database
@@ -161,19 +165,19 @@ export const useProjectStore = defineStore('project', () => {
     }
   }
 
-  function addContentToCurrentPage(content: Omit<ZineContent, 'id'>): void {
-    if (!currentPage.value) return;
+  function addContentToPage(pageId: string, content: Omit<ZineContent, 'id'>): string | null {
+    const page = getPageById(pageId);
+    if (!page) return null;
 
     const newContent: ZineContent = {
       ...content,
       id: `content-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
     };
 
-    currentPage.value.content.push(newContent);
+    page.content.push(newContent);
     isModified.value = true;
 
     const snapshot = JSON.parse(JSON.stringify(newContent)) as ZineContent;
-    const pageId = currentPage.value.id;
     pushHistory({
       name: 'addContent',
       undo: () => {
@@ -190,6 +194,67 @@ export const useProjectStore = defineStore('project', () => {
         }
       }
     });
+    return newContent.id;
+  }
+
+  function addContentToCurrentPage(content: Omit<ZineContent, 'id'>): string | null {
+    if (!currentPage.value) return null;
+    return addContentToPage(currentPage.value.id, content);
+  }
+
+  function addImageAssetToPage(
+    pageId: string,
+    asset: ImageAssetRecord,
+    center?: { x: number; y: number }
+  ): string | null {
+    if (!currentProject.value) return null;
+    if (!(currentProject.value.assetIds || []).includes(asset.id)) addAssetsToCatalog([asset.id]);
+    const pageSize = currentProject.value.template.pageCanvas
+      || currentProject.value.template.printLayout.pagePositions[0];
+    if (!pageSize) return null;
+
+    const maxWidth = pageSize.width * 0.6;
+    const maxHeight = pageSize.height * 0.6;
+    const scale = Math.min(1, maxWidth / asset.width, maxHeight / asset.height);
+    const width = Math.max(1, Math.round(asset.width * scale));
+    const height = Math.max(1, Math.round(asset.height * scale));
+    const targetCenter = center || { x: pageSize.width / 2, y: pageSize.height / 2 };
+    const x = Math.max(0, Math.min(pageSize.width - width, targetCenter.x - width / 2));
+    const y = Math.max(0, Math.min(pageSize.height - height, targetCenter.y - height / 2));
+
+    return addContentToPage(pageId, {
+      type: 'image',
+      x,
+      y,
+      width,
+      height,
+      rotation: 0,
+      zIndex: Date.now(),
+      properties: {
+        src: '',
+        alt: asset.name,
+        opacity: 1,
+        assetId: asset.id,
+      },
+    });
+  }
+
+  function addAssetsToCatalog(assetIds: number[]): void {
+    if (!currentProject.value || assetIds.length === 0) return;
+    currentProject.value.assetIds = [...new Set([
+      ...(currentProject.value.assetIds || []),
+      ...assetIds,
+    ])];
+    currentProject.value.modifiedAt = new Date();
+    isModified.value = true;
+  }
+
+  function removeAssetFromCatalog(assetId: number): boolean {
+    if (!currentProject.value || getAssetUsageCount(currentProject.value, assetId) > 0) return false;
+    currentProject.value.assetIds = (currentProject.value.assetIds || []).filter(id => id !== assetId);
+    currentProject.value.modifiedAt = new Date();
+    isModified.value = true;
+    return true;
   }
 
   function updateContent(contentId: string, updates: Partial<ZineContent>): void {
@@ -619,7 +684,11 @@ export const useProjectStore = defineStore('project', () => {
     createNewProject,
     loadProject,
     setCurrentPage,
+    addContentToPage,
     addContentToCurrentPage,
+    addImageAssetToPage,
+    addAssetsToCatalog,
+    removeAssetFromCatalog,
     updateContent,
     deleteContent,
     setContentVisibility,
