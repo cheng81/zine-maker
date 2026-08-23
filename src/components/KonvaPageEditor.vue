@@ -109,6 +109,9 @@
               />
             </template>
 
+            <!-- Page border stays above page content and inside the printable edge. -->
+            <v-rect v-if="resolvedPageBorder.width > 0" :config="pageBorderConfig" />
+
             <!-- Selection overlay to keep group/multi selection when clicking inside bounds -->
             <v-rect
               v-if="hasSelection && selectionBounds"
@@ -176,6 +179,7 @@ import Konva from 'konva';
 import AppToolbar from './AppToolbar.vue';
 import { useUIStore } from '@/stores/ui';
 import { getDraggedAssetId, hasDraggedAsset } from '@/utils/imageDrag';
+import { pageBorderRect, resolvePageBorder } from '@/utils/pageBorder';
 
 const projectStore = useProjectStore();
 const toolsStore = useToolsStore();
@@ -230,6 +234,29 @@ const pageBackgroundConfig = computed(() => {
     stroke: '#d1d5db',
     strokeWidth: 2,
     listening: true // use as deselect area only
+  };
+});
+
+const resolvedPageBorder = computed(() => {
+  const project = projectStore.currentProject;
+  const page = projectStore.currentPage;
+  return project && page ? resolvePageBorder(project, page) : { width: 0, color: '#000000' };
+});
+
+const pageBorderConfig = computed(() => {
+  const background = pageBackgroundConfig.value;
+  const border = resolvedPageBorder.value;
+  const rect = pageBorderRect(background.width, background.height, border);
+  return {
+    id: 'page-border',
+    x: background.x + rect.x,
+    y: background.y + rect.y,
+    width: rect.width,
+    height: rect.height,
+    fill: 'transparent',
+    stroke: border.color,
+    strokeWidth: rect.strokeWidth,
+    listening: false,
   };
 });
 

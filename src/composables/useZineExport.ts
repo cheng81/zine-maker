@@ -1,6 +1,7 @@
 import Konva from 'konva';
 import jsPDF from 'jspdf';
 import type { ZineProject, ZineContent, ZineTemplate, ShapeProperties, TextProperties, ImageProperties } from '@/types';
+import { pageBorderRect, resolvePageBorder } from '@/utils/pageBorder';
 
 export interface ExportOptions {
   showPageNumbers?: boolean;
@@ -76,6 +77,18 @@ export async function exportZineForTemplate(
           sorted.map(content => createKonvaNode(content, getAsset).catch(() => null))
         ).then(nodes => {
           for (const node of nodes) { if (node) group.add(node as Konva.Shape); }
+          if (page.pageNumber) {
+            const border = resolvePageBorder(project, page);
+            if (border.width > 0) {
+              const rect = pageBorderRect(pagePos.width, pagePos.height, border);
+              group.add(new Konva.Rect({
+                ...rect,
+                fill: 'transparent',
+                stroke: border.color,
+                listening: false,
+              }));
+            }
+          }
         });
         nodePromises.push(pagePromise);
 

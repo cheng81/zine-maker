@@ -42,8 +42,9 @@
           <div class="page-preview">
             <div class="page-number">{{ page.pageNumber }}</div>
             <div class="page-content-preview">
-              <div class="mini-page">
+              <div class="mini-page" :style="{ backgroundColor: page.backgroundColor || '#ffffff' }">
                 <div class="mini-content" v-for="(_, i) in page.content.slice(0,4)" :key="i" :style="{ width: (24 + (i%3)*18) + '%'}"></div>
+                <div v-if="resolvedBorder(page).width > 0" class="mini-page-border" :style="miniBorderStyle(page)" />
               </div>
             </div>
           </div>
@@ -82,6 +83,8 @@ import { ChevronRight, ChevronDown } from 'lucide-vue-next';
 import ImageCatalog from '@/components/ImageCatalog.vue';
 import { getDraggedAssetId, hasDraggedAsset } from '@/utils/imageDrag';
 import { useToolsStore } from '@/stores/tools';
+import type { ZinePage } from '@/types';
+import { resolvePageBorder } from '@/utils/pageBorder';
 
 const projectStore = useProjectStore();
 const uiStore = useUIStore();
@@ -95,6 +98,19 @@ let tabSwitchTimer: ReturnType<typeof setTimeout> | null = null;
 
 const pagesGridRef = ref<HTMLElement | null>(null);
 const pageIds = computed(() => projectStore.currentProject?.pages.map(p => p.id) ?? []);
+
+function resolvedBorder(page: ZinePage) {
+  const project = projectStore.currentProject;
+  return project ? resolvePageBorder(project, page) : { width: 0, color: '#000000' };
+}
+
+function miniBorderStyle(page: ZinePage) {
+  const border = resolvedBorder(page);
+  return {
+    borderColor: border.color,
+    borderWidth: `${Math.max(1, Math.min(6, border.width / 4))}px`,
+  };
+}
 
 useSortable(pagesGridRef, pageIds, {
   animation: 150,
@@ -377,6 +393,7 @@ async function exportZine(): Promise<void> {
   gap: 1px;
 }
 .mini-page { background: #fff; border: 1px solid var(--border-soft); width: 100%; height: 100%; position: relative; }
+.mini-page-border { position: absolute; inset: 0; z-index: 1; box-sizing: border-box; border-style: solid; pointer-events: none; }
 .mini-content { height: 3px; background: var(--border); margin: 2px; }
 .mini-icon { position: absolute; right: 2px; bottom: 2px; width: 16px; height: 16px; opacity: 0.9; }
 

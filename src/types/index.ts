@@ -36,6 +36,11 @@ export interface PagePosition {
   side?: 'front' | 'back';
 }
 
+export interface PageBorder {
+  width: number;
+  color: string;
+}
+
 export interface ZinePage {
   id: string;
   pageNumber: number;
@@ -43,6 +48,7 @@ export interface ZinePage {
   content: ZineContent[];
   backgroundColor: string;
   backgroundImage?: string;
+  border?: PageBorder;
 }
 
 export interface ZineContent {
@@ -120,6 +126,7 @@ export interface ZineProject {
     description: string;
     tags: string[];
   };
+  pageBorder?: PageBorder;
   assetIds?: number[];
   formatVersion?: number; // 3 = project image catalog, 2 = corrected cover layout
 }

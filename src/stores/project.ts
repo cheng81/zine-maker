@@ -1,10 +1,11 @@
 import { defineStore } from 'pinia';
 import { ref, computed, watch, toRaw } from 'vue';
-import type { ZineProject, ZinePage, ZineContent, ZineTemplate, ExportOptions } from '@/types';
+import type { ZineProject, ZinePage, ZineContent, ZineTemplate, ExportOptions, PageBorder } from '@/types';
 import { saveProject } from '@/utils/persistence';
 import { debounce } from 'lodash-es';
 import type { ImageAssetRecord } from '@/stores/assetStore';
 import { getAssetUsageCount, migrateProjectAssetCatalog } from '@/utils/projectAssets';
+import { normalizePageBorder } from '@/utils/pageBorder';
 
 export const useProjectStore = defineStore('project', () => {
   const currentProject = ref<ZineProject | null>(null);
@@ -131,6 +132,7 @@ export const useProjectStore = defineStore('project', () => {
         description: '',
         tags: []
       },
+      pageBorder: normalizePageBorder(),
       assetIds: [],
       formatVersion: 3
     };
@@ -543,6 +545,55 @@ export const useProjectStore = defineStore('project', () => {
     });
   }
 
+  function updateProjectPageBorder(border: PageBorder): void {
+    if (!currentProject.value) return;
+    const project = currentProject.value;
+    const previous = project.pageBorder ? { ...project.pageBorder } : undefined;
+    const next = normalizePageBorder(border);
+    project.pageBorder = next;
+    project.modifiedAt = new Date();
+    isModified.value = true;
+
+    pushHistory({
+      name: 'updateProjectPageBorder',
+      undo: () => {
+        if (!currentProject.value) return;
+        if (previous) currentProject.value.pageBorder = { ...previous };
+        else delete currentProject.value.pageBorder;
+      },
+      redo: () => {
+        if (!currentProject.value) return;
+        currentProject.value.pageBorder = { ...next };
+      }
+    });
+  }
+
+  function updateCurrentPageBorder(border?: PageBorder): void {
+    if (!currentPage.value) return;
+    const pageId = currentPage.value.id;
+    const previous = currentPage.value.border ? { ...currentPage.value.border } : undefined;
+    const next = border ? normalizePageBorder(border) : undefined;
+    if (next) currentPage.value.border = next;
+    else delete currentPage.value.border;
+    isModified.value = true;
+
+    pushHistory({
+      name: 'updatePageBorder',
+      undo: () => {
+        const page = getPageById(pageId);
+        if (!page) return;
+        if (previous) page.border = { ...previous };
+        else delete page.border;
+      },
+      redo: () => {
+        const page = getPageById(pageId);
+        if (!page) return;
+        if (next) page.border = { ...next };
+        else delete page.border;
+      }
+    });
+  }
+
   function updateProjectMetadata(metadata: Partial<ZineProject['metadata']>): void {
     if (!currentProject.value) return;
     const prev = JSON.parse(JSON.stringify(currentProject.value.metadata));
@@ -699,6 +750,8 @@ export const useProjectStore = defineStore('project', () => {
     selectContent,
     clearSelection,
     updatePageBackground,
+    updateProjectPageBorder,
+    updateCurrentPageBorder,
     updateProjectMetadata,
     updateProjectName,
     manualSave,

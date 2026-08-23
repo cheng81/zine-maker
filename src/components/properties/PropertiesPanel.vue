@@ -16,9 +16,7 @@
         <LayersPanel />
       </template>
       <template v-else>
-        <div v-if="!hasSelection" class="no-selection">
-          <p>Select an element to edit its properties</p>
-        </div>
+        <PageProperties v-if="!hasSelection" />
 
         <div v-else-if="selectedContent.length === 1" class="single-selection">
           <TextProperties 
@@ -73,6 +71,7 @@ import ShapeProperties from './ShapeProperties.vue';
 import DrawingProperties from './DrawingProperties.vue';
 import MultiSelectionProperties from './MultiSelectionProperties.vue';
 import TransformProperties from './TransformProperties.vue';
+import PageProperties from './PageProperties.vue';
 import type { ZineContent } from '@/types';
 
 defineEmits<{
