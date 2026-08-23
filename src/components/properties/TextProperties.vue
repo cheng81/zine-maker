@@ -29,8 +29,13 @@
           <optgroup label="Built-in fonts">
             <option v-for="family in systemFonts" :key="family" :value="family">{{ family }}</option>
           </optgroup>
-          <optgroup v-if="fontStore.fonts.length" label="Custom fonts">
-            <option v-for="font in fontStore.fonts" :key="font.id" :value="font.family">
+          <optgroup v-if="uploadedFonts.length" label="Uploaded fonts">
+            <option v-for="font in uploadedFonts" :key="font.id" :value="font.family">
+              {{ font.family }}
+            </option>
+          </optgroup>
+          <optgroup v-if="googleFonts.length" label="Google Fonts">
+            <option v-for="font in googleFonts" :key="font.id" :value="font.family">
               {{ font.family }}
             </option>
           </optgroup>
@@ -39,6 +44,15 @@
           <button class="font-button" type="button" :disabled="uploadingFont" @click="fontInput?.click()">
             <Upload :size="15" />
             {{ uploadingFont ? 'Loading...' : 'Add font' }}
+          </button>
+          <button
+            class="font-button"
+            type="button"
+            :disabled="addingGoogleFont"
+            @click="openGoogleFontForm"
+          >
+            <Globe2 :size="15" />
+            Google font
           </button>
           <button
             v-if="selectedCustomFont"
@@ -58,6 +72,42 @@
             @change="handleFontUpload"
           />
         </div>
+        <form v-if="showGoogleFontForm" class="google-font-form" @submit.prevent="handleGoogleFontAdd">
+          <label for="google-font-family">Google Fonts family</label>
+          <div class="google-font-controls">
+            <input
+              id="google-font-family"
+              ref="googleFontInput"
+              v-model="googleFontFamily"
+              class="text-input"
+              type="text"
+              placeholder="e.g. Libre Baskerville"
+              autocomplete="off"
+              :disabled="addingGoogleFont"
+              @keydown.esc.prevent="closeGoogleFontForm"
+            />
+            <button
+              class="font-button font-button--icon font-button--confirm"
+              type="submit"
+              title="Add Google Font"
+              aria-label="Add Google Font"
+              :disabled="addingGoogleFont || !googleFontFamily.trim()"
+            >
+              <LoaderCircle v-if="addingGoogleFont" class="spin" :size="15" />
+              <Plus v-else :size="15" />
+            </button>
+            <button
+              class="font-button font-button--icon"
+              type="button"
+              title="Cancel"
+              aria-label="Cancel"
+              :disabled="addingGoogleFont"
+              @click="closeGoogleFontForm"
+            >
+              <X :size="15" />
+            </button>
+          </div>
+        </form>
         <p v-if="fontError || fontStore.loadError" class="font-error" role="alert">
           {{ fontError || fontStore.loadError }}
         </p>
@@ -174,10 +224,10 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, nextTick, ref } from 'vue';
 import type { ZineContent, TextProperties } from '@/types';
 import { useFontStore } from '@/stores/fontStore';
-import { Trash2, Upload } from 'lucide-vue-next';
+import { Globe2, LoaderCircle, Plus, Trash2, Upload, X } from 'lucide-vue-next';
 import ColorPicker from './ColorPicker.vue';
 import NumberInput from './NumberInput.vue';
 
@@ -193,7 +243,11 @@ const props = defineProps<Props>();
 const emit = defineEmits<Emits>();
 const fontStore = useFontStore();
 const fontInput = ref<HTMLInputElement | null>(null);
+const googleFontInput = ref<HTMLInputElement | null>(null);
 const uploadingFont = ref(false);
+const addingGoogleFont = ref(false);
+const showGoogleFontForm = ref(false);
+const googleFontFamily = ref('');
 const fontError = ref<string | null>(null);
 const systemFonts = ['Arial', 'Helvetica', 'Times New Roman', 'Georgia', 'Courier New', 'Verdana', 'Impact'];
 
@@ -202,6 +256,8 @@ const availableFontFamilies = computed(() => [
   ...systemFonts,
   ...fontStore.fonts.map(font => font.family),
 ]);
+const uploadedFonts = computed(() => fontStore.fonts.filter(font => font.source === 'upload'));
+const googleFonts = computed(() => fontStore.fonts.filter(font => font.source === 'google'));
 const selectedCustomFont = computed(() => (
   fontStore.fonts.find(font => font.family === textProps.value.fontFamily)
 ));
@@ -246,6 +302,36 @@ async function handleFontUpload(event: Event) {
   } finally {
     uploadingFont.value = false;
     input.value = '';
+  }
+}
+
+async function openGoogleFontForm() {
+  showGoogleFontForm.value = true;
+  fontError.value = null;
+  await nextTick();
+  googleFontInput.value?.focus();
+}
+
+function closeGoogleFontForm() {
+  showGoogleFontForm.value = false;
+  googleFontFamily.value = '';
+  fontError.value = null;
+}
+
+async function handleGoogleFontAdd() {
+  if (!googleFontFamily.value.trim()) return;
+
+  addingGoogleFont.value = true;
+  fontError.value = null;
+  try {
+    const font = await fontStore.addGoogleFont(googleFontFamily.value);
+    updateProperty('fontFamily', font.family);
+    showGoogleFontForm.value = false;
+    googleFontFamily.value = '';
+  } catch (error) {
+    fontError.value = error instanceof Error ? error.message : 'The Google Font could not be loaded.';
+  } finally {
+    addingGoogleFont.value = false;
   }
 }
 
@@ -333,6 +419,7 @@ label {
 
 .font-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 0.35rem;
   margin-top: 0.4rem;
 }
@@ -365,6 +452,33 @@ label {
   width: 34px;
   padding: 0;
   color: #b91c1c;
+}
+
+.font-button--confirm {
+  color: var(--ui-ink);
+}
+
+.google-font-form {
+  margin-top: 0.55rem;
+}
+
+.google-font-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 34px 34px;
+  gap: 0.35rem;
+  margin-top: 0.3rem;
+}
+
+.google-font-controls .text-input {
+  min-width: 0;
+}
+
+.spin {
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
 }
 
 .hidden-input {
