@@ -4,19 +4,32 @@
       <div class="sidebar-tabs">
         <button
           class="sidebar-tab"
-          :class="{ active: uiStore.leftSidebarTab === 'pages' }"
+          :class="{ active: pinnedLayout || uiStore.leftSidebarTab === 'pages' }"
           @click="uiStore.leftSidebarTab = 'pages'"
           @dragenter="onPagesTabDragEnter"
           @dragleave="cancelTabSwitch"
         >Pages</button>
         <button
           class="sidebar-tab"
-          :class="{ active: uiStore.leftSidebarTab === 'images' }"
+          :class="{ active: pinnedLayout || uiStore.leftSidebarTab === 'images' }"
           @click="uiStore.leftSidebarTab = 'images'"
         >Images</button>
       </div>
-      <span class="page-count">
-        {{ uiStore.leftSidebarTab === 'pages' ? `${projectStore.pageCount} pages` : `${projectStore.currentProject?.assetIds?.length || 0} images` }}
+      <button
+        v-if="!isMobile"
+        class="pin-button"
+        type="button"
+        :class="{ active: uiStore.imageCatalogPinned }"
+        :title="uiStore.imageCatalogPinned ? 'Unpin image catalog' : 'Pin image catalog'"
+        :aria-label="uiStore.imageCatalogPinned ? 'Unpin image catalog' : 'Pin image catalog'"
+        :aria-pressed="uiStore.imageCatalogPinned"
+        @click="toggleImageCatalogPin"
+      >
+        <PinOff v-if="uiStore.imageCatalogPinned" :size="16" />
+        <Pin v-else :size="16" />
+      </button>
+      <span class="page-count" :title="sidebarCountTitle">
+        {{ sidebarCount }}
       </span>
       <button class="collapse-button" @click="uiStore.togglePageListCollapsed()">
         <ChevronRight v-if="uiStore.pageListCollapsed" :size="20" />
@@ -24,50 +37,74 @@
       </button>
     </div>
 
-    <div v-show="uiStore.leftSidebarTab === 'pages'" class="sidebar-pane pages-pane">
-      <div class="pages-grid" ref="pagesGridRef">
-        <div
-          v-for="(page, index) in projectStore.currentProject?.pages"
-          :key="page.id"
-          class="page-item"
-          :class="{
-            active: index === projectStore.currentPageIndex,
-            'asset-drop-target': dropTargetPageId === page.id,
-          }"
-          @click="projectStore.setCurrentPage(index)"
-          @dragover="onPageDragOver(page.id, $event)"
-          @dragleave="onPageDragLeave(page.id)"
-          @drop.stop="onPageAssetDrop(page.id, index, $event)"
-        >
-          <div class="page-preview">
-            <div class="page-number">{{ page.pageNumber }}</div>
-            <div class="page-content-preview">
-              <div class="mini-page" :style="{ backgroundColor: page.backgroundColor || '#ffffff' }">
-                <div class="mini-content" v-for="(_, i) in page.content.slice(0,4)" :key="i" :style="{ width: (24 + (i%3)*18) + '%'}"></div>
-                <div v-if="resolvedBorder(page).width > 0" class="mini-page-border" :style="miniBorderStyle(page)" />
+    <div
+      ref="splitContainerRef"
+      class="sidebar-content"
+      :class="{ 'pinned-sidebar': pinnedLayout, resizing: resizingSplit }"
+      :style="pinnedLayout ? pinnedGridStyle : undefined"
+    >
+      <div v-show="pinnedLayout || uiStore.leftSidebarTab === 'pages'" class="sidebar-pane pages-pane">
+        <div class="pages-grid" ref="pagesGridRef">
+          <div
+            v-for="(page, index) in projectStore.currentProject?.pages"
+            :key="page.id"
+            class="page-item"
+            :class="{
+              active: index === projectStore.currentPageIndex,
+              'asset-drop-target': dropTargetPageId === page.id,
+            }"
+            @click="projectStore.setCurrentPage(index)"
+            @dragover="onPageDragOver(page.id, $event)"
+            @dragleave="onPageDragLeave(page.id)"
+            @drop.stop="onPageAssetDrop(page.id, index, $event)"
+          >
+            <div class="page-preview">
+              <div class="page-number">{{ page.pageNumber }}</div>
+              <div class="page-content-preview">
+                <div class="mini-page" :style="{ backgroundColor: page.backgroundColor || '#ffffff' }">
+                  <div class="mini-content" v-for="(_, i) in page.content.slice(0,4)" :key="i" :style="{ width: (24 + (i%3)*18) + '%'}"></div>
+                  <div v-if="resolvedBorder(page).width > 0" class="mini-page-border" :style="miniBorderStyle(page)" />
+                </div>
               </div>
             </div>
+            <div class="page-info">
+              <div class="page-title" @dblclick.stop="startEdit(page)" v-if="editingId !== page.id">{{ pageTitle(page) }}</div>
+              <input v-else class="title-input" :value="editValue" @input="onEditInput($event)" @keydown.enter.prevent="commitEdit(page)" @keydown.esc.prevent="cancelEdit" @blur="commitEdit(page)" />
+              <div class="page-stats">{{ page.content.length }} items</div>
+            </div>
           </div>
-          <div class="page-info">
-            <div class="page-title" @dblclick.stop="startEdit(page)" v-if="editingId !== page.id">{{ pageTitle(page) }}</div>
-            <input v-else class="title-input" :value="editValue" @input="onEditInput($event)" @keydown.enter.prevent="commitEdit(page)" @keydown.esc.prevent="cancelEdit" @blur="commitEdit(page)" />
-            <div class="page-stats">{{ page.content.length }} items</div>
+        </div>
+
+        <div class="page-actions">
+          <div class="export-options">
+            <label><input type="checkbox" v-model="uiStore.showPageNumbers" /> Page numbers</label>
+            <label><input type="checkbox" v-model="uiStore.showFoldMarks" /> Fold marks</label>
+            <label><input type="checkbox" v-model="uiStore.showCutMarks" /> Cut marks</label>
           </div>
+          <button @click="exportZine" class="export-button export-button--green">Export Zine for Printing</button>
         </div>
       </div>
 
-      <div class="page-actions">
-        <div class="export-options">
-          <label><input type="checkbox" v-model="uiStore.showPageNumbers" /> Page numbers</label>
-          <label><input type="checkbox" v-model="uiStore.showFoldMarks" /> Fold marks</label>
-          <label><input type="checkbox" v-model="uiStore.showCutMarks" /> Cut marks</label>
-        </div>
-        <button @click="exportZine" class="export-button export-button--green">Export Zine for Printing</button>
+      <div
+        v-if="pinnedLayout"
+        class="split-divider"
+        role="separator"
+        aria-orientation="horizontal"
+        aria-label="Resize pages and images panels"
+        :aria-valuenow="Math.round(uiStore.leftSidebarSplit * 100)"
+        aria-valuemin="25"
+        aria-valuemax="75"
+        tabindex="0"
+        @pointerdown="startSplitResize"
+        @dblclick="resetSplit"
+        @keydown="onSplitKeydown"
+      >
+        <GripHorizontal :size="15" />
       </div>
-    </div>
 
-    <div v-show="uiStore.leftSidebarTab === 'images'" class="sidebar-pane images-pane">
-      <ImageCatalog />
+      <div v-show="pinnedLayout || uiStore.leftSidebarTab === 'images'" class="sidebar-pane images-pane">
+        <ImageCatalog />
+      </div>
     </div>
   </div>
 </template>
@@ -79,7 +116,7 @@ import { useProjectStore } from '@/stores/project';
 import { useUIStore } from '@/stores/ui';
 import { useAssetStore } from '@/stores/assetStore';
 import { exportZineForTemplate } from '@/composables/useZineExport';
-import { ChevronRight, ChevronDown } from 'lucide-vue-next';
+import { ChevronRight, ChevronDown, GripHorizontal, Pin, PinOff } from 'lucide-vue-next';
 import ImageCatalog from '@/components/ImageCatalog.vue';
 import { getDraggedAssetId, hasDraggedAsset } from '@/utils/imageDrag';
 import { useToolsStore } from '@/stores/tools';
@@ -94,10 +131,32 @@ const toolsStore = useToolsStore();
 const editingId = ref<string | null>(null);
 const editValue = ref('');
 const dropTargetPageId = ref<string | null>(null);
+const splitContainerRef = ref<HTMLElement | null>(null);
+const resizingSplit = ref(false);
+const isMobile = ref(typeof window !== 'undefined' && window.matchMedia('(max-width: 900px)').matches);
 let tabSwitchTimer: ReturnType<typeof setTimeout> | null = null;
+let mobileMediaQuery: MediaQueryList | null = null;
+let previousBodyCursor = '';
+let previousBodyUserSelect = '';
 
 const pagesGridRef = ref<HTMLElement | null>(null);
 const pageIds = computed(() => projectStore.currentProject?.pages.map(p => p.id) ?? []);
+const pinnedLayout = computed(() => uiStore.imageCatalogPinned && !isMobile.value);
+const pinnedGridStyle = computed(() => ({
+  gridTemplateRows: `${uiStore.leftSidebarSplit}fr 10px ${1 - uiStore.leftSidebarSplit}fr`,
+}));
+const sidebarCount = computed(() => {
+  const imageCount = projectStore.currentProject?.assetIds?.length || 0;
+  if (pinnedLayout.value) return `${projectStore.pageCount}p / ${imageCount}i`;
+  return uiStore.leftSidebarTab === 'pages'
+    ? `${projectStore.pageCount} pages`
+    : `${imageCount} images`;
+});
+const sidebarCountTitle = computed(() => (
+  pinnedLayout.value
+    ? `${projectStore.pageCount} pages, ${projectStore.currentProject?.assetIds?.length || 0} images`
+    : sidebarCount.value
+));
 
 function resolvedBorder(page: ZinePage) {
   const project = projectStore.currentProject;
@@ -153,7 +212,7 @@ function commitEdit(page: any): void {
 function cancelEdit(): void { editingId.value = null; }
 
 function onPagesTabDragEnter(event: DragEvent) {
-  if (!hasDraggedAsset(event) || uiStore.leftSidebarTab === 'pages') return;
+  if (pinnedLayout.value || !hasDraggedAsset(event) || uiStore.leftSidebarTab === 'pages') return;
   event.preventDefault();
   cancelTabSwitch();
   tabSwitchTimer = setTimeout(() => {
@@ -197,15 +256,79 @@ function clearAssetDragState() {
   dropTargetPageId.value = null;
 }
 
+function toggleImageCatalogPin() {
+  const pinned = !uiStore.imageCatalogPinned;
+  uiStore.setImageCatalogPinned(pinned);
+  if (!pinned) uiStore.leftSidebarTab = 'images';
+}
+
+function startSplitResize(event: PointerEvent) {
+  if (!pinnedLayout.value || resizingSplit.value) return;
+  event.preventDefault();
+  resizingSplit.value = true;
+  previousBodyCursor = document.body.style.cursor;
+  previousBodyUserSelect = document.body.style.userSelect;
+  document.body.style.cursor = 'row-resize';
+  document.body.style.userSelect = 'none';
+  window.addEventListener('pointermove', onSplitResize);
+  window.addEventListener('pointerup', stopSplitResize, { once: true });
+  window.addEventListener('pointercancel', stopSplitResize, { once: true });
+}
+
+function onSplitResize(event: PointerEvent) {
+  const container = splitContainerRef.value;
+  if (!resizingSplit.value || !container) return;
+  const bounds = container.getBoundingClientRect();
+  if (!bounds.height) return;
+  const minPaneHeight = Math.min(160, bounds.height * 0.45);
+  const minRatio = minPaneHeight / bounds.height;
+  const split = Math.min(1 - minRatio, Math.max(minRatio, (event.clientY - bounds.top) / bounds.height));
+  uiStore.leftSidebarSplit = split;
+}
+
+function stopSplitResize() {
+  if (!resizingSplit.value) return;
+  resizingSplit.value = false;
+  uiStore.setLeftSidebarSplit(uiStore.leftSidebarSplit);
+  document.body.style.cursor = previousBodyCursor;
+  document.body.style.userSelect = previousBodyUserSelect;
+  window.removeEventListener('pointermove', onSplitResize);
+  window.removeEventListener('pointerup', stopSplitResize);
+  window.removeEventListener('pointercancel', stopSplitResize);
+}
+
+function resetSplit() {
+  uiStore.setLeftSidebarSplit(0.58);
+}
+
+function onSplitKeydown(event: KeyboardEvent) {
+  if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown' && event.key !== 'Home' && event.key !== 'End') return;
+  event.preventDefault();
+  if (event.key === 'Home') uiStore.setLeftSidebarSplit(0.25);
+  else if (event.key === 'End') uiStore.setLeftSidebarSplit(0.75);
+  else uiStore.setLeftSidebarSplit(uiStore.leftSidebarSplit + (event.key === 'ArrowDown' ? 0.03 : -0.03));
+}
+
+function updateMobileState(event: MediaQueryListEvent | MediaQueryList) {
+  isMobile.value = event.matches;
+  if (isMobile.value) stopSplitResize();
+}
+
 onMounted(() => {
   window.addEventListener('dragend', clearAssetDragState);
   window.addEventListener('drop', clearAssetDragState);
+  mobileMediaQuery = window.matchMedia('(max-width: 900px)');
+  updateMobileState(mobileMediaQuery);
+  mobileMediaQuery.addEventListener('change', updateMobileState);
 });
 
 onUnmounted(() => {
   clearAssetDragState();
+  stopSplitResize();
   window.removeEventListener('dragend', clearAssetDragState);
   window.removeEventListener('drop', clearAssetDragState);
+  mobileMediaQuery?.removeEventListener('change', updateMobileState);
+  mobileMediaQuery = null;
 });
 
 async function exportZine(): Promise<void> {
@@ -249,7 +372,7 @@ async function exportZine(): Promise<void> {
   border-right: 1px solid var(--border-soft);
 }
 .page-list.collapsed { width: 40px; }
-.page-list.collapsed .sidebar-pane, .page-list.collapsed .page-count, .page-list.collapsed .sidebar-tabs { display: none; }
+.page-list.collapsed .sidebar-content, .page-list.collapsed .page-count, .page-list.collapsed .sidebar-tabs, .page-list.collapsed .pin-button { display: none; }
 
 .page-list-header {
   display: flex;
@@ -263,6 +386,26 @@ async function exportZine(): Promise<void> {
 .sidebar-tabs {
   display: flex;
   gap: 0.2rem;
+}
+
+.pin-button {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--ui-ink);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.pin-button:hover,
+.pin-button.active {
+  border-color: var(--border-soft);
+  background: var(--surface);
 }
 
 .sidebar-tab {
@@ -279,13 +422,54 @@ async function exportZine(): Promise<void> {
 
 .sidebar-tab.active { border-color: var(--border); background: var(--surface); }
 
-.sidebar-pane { flex: 1; min-height: 0; }
+.sidebar-content { flex: 1; min-height: 0; display: flex; }
+.sidebar-content.pinned-sidebar { display: grid; }
+.sidebar-pane { flex: 1; min-width: 0; min-height: 0; }
 .pages-pane { display: flex; flex-direction: column; }
 .images-pane { overflow: hidden; }
+.pinned-sidebar .images-pane { padding-top: 0.4rem; }
+
+.split-divider {
+  position: relative;
+  min-height: 10px;
+  color: #6b7280;
+  cursor: row-resize;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  touch-action: none;
+}
+
+.split-divider::before {
+  content: '';
+  position: absolute;
+  right: 0;
+  left: 0;
+  height: 1px;
+  background: var(--border-soft);
+}
+
+.split-divider svg {
+  position: relative;
+  z-index: 1;
+  background: var(--panel);
+}
+
+.split-divider:hover,
+.split-divider:focus-visible,
+.resizing .split-divider {
+  color: var(--ui-ink);
+  outline: none;
+}
 
 .page-count {
+  min-width: 0;
+  margin-left: auto;
   color: var(--ui-ink);
   font-size: 0.8rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .collapse-button { 
   border: none; 
