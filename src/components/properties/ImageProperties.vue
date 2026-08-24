@@ -155,11 +155,16 @@ async function handleImageChange(event: Event) {
     if (!asset) throw new Error(result.failures[0]?.reason || 'Image could not be loaded.');
     projectStore.addAssetsToCatalog([asset.id]);
     emit('update', props.content.id, {
+      ...(imageProps.value.lockAspectRatio && asset.width > 0 && asset.height > 0
+        ? { height: roundPixels(props.content.width * asset.height / asset.width) }
+        : {}),
       properties: {
         ...imageProps.value,
         src: '',
         assetId: asset.id,
         alt: file.name,
+        originalWidth: asset.width,
+        originalHeight: asset.height,
       }
     });
   } catch (error) {
@@ -195,6 +200,10 @@ function revokePreviewUrl() {
   if (!previewObjectUrl) return;
   URL.revokeObjectURL(previewObjectUrl);
   previewObjectUrl = null;
+}
+
+function roundPixels(value: number) {
+  return Math.max(1, Math.round(value * 100) / 100);
 }
 
 function resetImage() {

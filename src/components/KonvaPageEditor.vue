@@ -800,6 +800,7 @@ onMounted(() => {
         height = height * scaleY;
         node.scale({ x: 1, y: 1 });
       }
+      ({ width, height } = constrainImageSize(id, width, height));
       const pos = node.position();
       projectStore.updateContent(id, { x: pos.x - pageBackgroundConfig.value.x, y: pos.y - pageBackgroundConfig.value.y, width, height, rotation });
     });
@@ -830,6 +831,7 @@ watch(
           height = height * scaleY;
           node.scale({ x: 1, y: 1 });
         }
+        ({ width, height } = constrainImageSize(id, width, height));
         const pos = node.position();
         projectStore.updateContent(id, { x: pos.x - pageBackgroundConfig.value.x, y: pos.y - pageBackgroundConfig.value.y, width, height, rotation });
       });
@@ -840,10 +842,37 @@ watch(
   { immediate: true }
 );
 
-const transformerConfig = { 
-  rotateAnchorOffset: 20, 
-  enabledAnchors: ['top-left', 'top-right', 'bottom-left', 'bottom-right', 'middle-left', 'middle-right', 'top-center', 'bottom-center'] 
-};
+const transformerConfig = computed(() => {
+  const allAnchors = ['top-left', 'top-right', 'bottom-left', 'bottom-right', 'middle-left', 'middle-right', 'top-center', 'bottom-center'];
+  const content = selectedIds.value.length === 1
+    ? projectStore.getContentById(selectedIds.value[0])
+    : null;
+  if (content?.type !== 'image') {
+    return { rotateAnchorOffset: 20, enabledAnchors: allAnchors };
+  }
+
+  const locked = Boolean((content.properties as ImageProperties).lockAspectRatio);
+  return {
+    rotateAnchorOffset: 20,
+    keepRatio: locked,
+    enabledAnchors: locked
+      ? ['top-left', 'top-right', 'bottom-left', 'bottom-right']
+      : allAnchors,
+  };
+});
+
+function constrainImageSize(id: string, width: number, height: number) {
+  const content = projectStore.getContentById(id);
+  if (content?.type !== 'image') return { width, height };
+  const properties = content.properties as ImageProperties;
+  if (!properties.lockAspectRatio || !properties.originalWidth || !properties.originalHeight) {
+    return { width, height };
+  }
+  return {
+    width,
+    height: Math.max(1, Math.round(width * properties.originalHeight / properties.originalWidth * 100) / 100),
+  };
+}
 
 const isSelecting = ref(false);
 const selectionStart = ref({ x: 0, y: 0 });

@@ -237,6 +237,9 @@ export const useProjectStore = defineStore('project', () => {
         alt: asset.name,
         opacity: 1,
         assetId: asset.id,
+        lockAspectRatio: false,
+        originalWidth: asset.width,
+        originalHeight: asset.height,
       },
     });
   }

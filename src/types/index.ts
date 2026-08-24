@@ -87,6 +87,9 @@ export interface ImageProperties {
   opacity: number;
   filters?: string;
   assetId?: number;
+  lockAspectRatio?: boolean;
+  originalWidth?: number;
+  originalHeight?: number;
 }
 
 export interface ShapeProperties {
