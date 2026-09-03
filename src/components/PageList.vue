@@ -81,7 +81,17 @@
             <label><input type="checkbox" v-model="uiStore.showFoldMarks" /> Fold marks</label>
             <label><input type="checkbox" v-model="uiStore.showCutMarks" /> Cut marks</label>
           </div>
-          <button @click="exportZine" class="export-button export-button--green">Export Zine for Printing</button>
+          <label class="export-resolution">
+            <span>Resolution</span>
+            <select :value="uiStore.exportDpi" :disabled="exporting" @change="updateExportDpi">
+              <option :value="150">150 DPI - draft</option>
+              <option :value="300">300 DPI - print</option>
+              <option :value="600">600 DPI - high</option>
+            </select>
+          </label>
+          <button @click="exportZine" class="export-button export-button--green" :disabled="exporting">
+            {{ exporting ? 'Generating...' : 'Export Zine for Printing' }}
+          </button>
         </div>
       </div>
 
@@ -133,6 +143,7 @@ const editValue = ref('');
 const dropTargetPageId = ref<string | null>(null);
 const splitContainerRef = ref<HTMLElement | null>(null);
 const resizingSplit = ref(false);
+const exporting = ref(false);
 const isMobile = ref(typeof window !== 'undefined' && window.matchMedia('(max-width: 900px)').matches);
 let tabSwitchTimer: ReturnType<typeof setTimeout> | null = null;
 let mobileMediaQuery: MediaQueryList | null = null;
@@ -336,6 +347,7 @@ async function exportZine(): Promise<void> {
     console.error('No current project to export.');
     return;
   }
+  exporting.value = true;
   try {
     const { images, pdfData, width, height } = await exportZineForTemplate(
       projectStore.currentProject,
@@ -344,7 +356,7 @@ async function exportZine(): Promise<void> {
         showPageNumbers: uiStore.showPageNumbers,
         showFoldMarks: uiStore.showFoldMarks,
         showCutMarks: uiStore.showCutMarks,
-        pixelRatio: 2,
+        dpi: uiStore.exportDpi,
       }
     );
     uiStore.exportImageWidth = width;
@@ -357,7 +369,13 @@ async function exportZine(): Promise<void> {
   } catch (error) {
     console.error('Export failed:', error);
     alert('Export failed. Please check the console for details.');
+  } finally {
+    exporting.value = false;
   }
+}
+
+function updateExportDpi(event: Event): void {
+  uiStore.setExportDpi(Number((event.target as HTMLSelectElement).value));
 }
 
 </script>
@@ -608,8 +626,27 @@ async function exportZine(): Promise<void> {
   margin-top: 0.75rem;
 }
 
-.export-options { display: flex; gap: 0.75rem; align-items: center; margin-bottom: 0.5rem; color: var(--ui-ink); }
+.export-options { display: flex; flex-wrap: wrap; gap: 0.5rem 0.75rem; align-items: center; margin-bottom: 0.5rem; color: var(--ui-ink); }
 .export-options label { display: inline-flex; gap: 0.35rem; align-items: center; font-size: 0.85rem; }
+
+.export-resolution {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.65rem;
+  color: var(--ui-ink);
+  font-size: 0.85rem;
+}
+
+.export-resolution select {
+  min-width: 128px;
+  padding: 0.35rem 0.4rem;
+  border: 1px solid var(--border-soft);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--ui-ink);
+}
 
 .export-button {
   width: 100%;
@@ -626,6 +663,7 @@ async function exportZine(): Promise<void> {
 }
 
 .export-button:hover { transform: translate(-1px,-1px); box-shadow: 3px 3px 0 #000; }
+.export-button:disabled { cursor: wait; opacity: 0.65; transform: none; box-shadow: 2px 2px 0 #000; }
 
 /* Mobile responsive page list */
 @media (max-width: 768px) {

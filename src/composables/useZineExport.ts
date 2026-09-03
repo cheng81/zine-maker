@@ -8,6 +8,7 @@ export interface ExportOptions {
   showFoldMarks?: boolean;
   showCutMarks?: boolean;
   pixelRatio?: number;
+  dpi?: number;
   bleed?: number; // optional sheet bleed in points (72dpi). default 0
 }
 
@@ -30,7 +31,8 @@ export async function exportZineForTemplate(
 
   const width = template.printLayout.sheetWidth;
   const height = template.printLayout.sheetHeight;
-  const pixelRatio = options.pixelRatio ?? 2;
+  const dpi = Number.isFinite(options.dpi) && Number(options.dpi) > 0 ? Number(options.dpi) : 300;
+  const pixelRatio = options.pixelRatio ?? dpi / 72;
 
   // Use the current template's page positions (which have the corrected layout)
   let pagePositions = template.printLayout.pagePositions;
@@ -246,7 +248,12 @@ export async function exportZineForTemplate(
     }
 
     const pdfData = await generatePDF(images, width, height);
-    return { images, pdfData, width: width * pixelRatio, height: height * pixelRatio };
+    return {
+      images,
+      pdfData,
+      width: Math.round(width * pixelRatio),
+      height: Math.round(height * pixelRatio),
+    };
   } finally {
     document.body.removeChild(tempContainer);
   }

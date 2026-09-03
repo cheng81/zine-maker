@@ -23,6 +23,14 @@
           </div>
         </div>
         <p v-if="imageError" class="image-error" role="alert">{{ imageError }}</p>
+        <div v-if="sourceDimensions" class="resolution-details">
+          <span>Source: {{ sourceDimensions.width }} × {{ sourceDimensions.height }} px</span>
+          <span v-if="effectivePpi">Effective: {{ effectivePpi }} PPI</span>
+        </div>
+        <div v-if="resolutionWarning" class="resolution-warning" role="status">
+          <TriangleAlert :size="16" />
+          <span>{{ resolutionWarning }}</span>
+        </div>
       </div>
 
       <div class="property-group">
@@ -91,7 +99,8 @@ import { computed, onUnmounted, ref, watch } from 'vue';
 import type { ZineContent, ImageProperties } from '@/types';
 import { useProjectStore } from '@/stores/project';
 import { useAssetStore } from '@/stores/assetStore';
-import { ImageOff } from 'lucide-vue-next';
+import { useUIStore } from '@/stores/ui';
+import { ImageOff, TriangleAlert } from 'lucide-vue-next';
 
 interface Props {
   content: ZineContent;
@@ -106,14 +115,29 @@ const emit = defineEmits<Emits>();
 
 const projectStore = useProjectStore();
 const assetStore = useAssetStore();
+const uiStore = useUIStore();
 const fileInput = ref<HTMLInputElement | null>(null);
 const previewSrc = ref('');
 const changingImage = ref(false);
 const imageError = ref('');
+const sourceDimensions = ref<{ width: number; height: number } | null>(null);
 let previewObjectUrl: string | null = null;
 let previewRequest = 0;
 
 const imageProps = computed(() => props.content.properties as ImageProperties);
+const effectivePpi = computed(() => {
+  const dimensions = sourceDimensions.value;
+  if (!dimensions || props.content.width <= 0 || props.content.height <= 0) return null;
+  return Math.round(Math.min(
+    dimensions.width / (props.content.width / 72),
+    dimensions.height / (props.content.height / 72),
+  ));
+});
+const resolutionWarning = computed(() => {
+  const ppi = effectivePpi.value;
+  if (!ppi || ppi >= uiStore.exportDpi) return '';
+  return `This image provides about ${ppi} PPI at its current size, below the ${uiStore.exportDpi} DPI export setting.`;
+});
 
 watch(
   () => [imageProps.value.assetId, imageProps.value.src] as const,
@@ -179,21 +203,42 @@ async function loadPreview() {
   const request = ++previewRequest;
   revokePreviewUrl();
   previewSrc.value = '';
+  sourceDimensions.value = dimensionsFromProperties();
   imageError.value = '';
 
   const assetId = imageProps.value.assetId;
   if (typeof assetId === 'number') {
     try {
-      const file = await assetStore.getAsset(assetId);
-      if (request !== previewRequest || !file) return;
-      previewObjectUrl = URL.createObjectURL(file);
+      const asset = await assetStore.getAssetRecord(assetId);
+      if (request !== previewRequest || !asset) return;
+      sourceDimensions.value = { width: asset.width, height: asset.height };
+      previewObjectUrl = URL.createObjectURL(asset.file);
       previewSrc.value = previewObjectUrl;
     } catch {
       if (request === previewRequest) imageError.value = 'Image preview could not be loaded.';
     }
     return;
   }
-  if (request === previewRequest) previewSrc.value = imageProps.value.src;
+  if (request === previewRequest) {
+    previewSrc.value = imageProps.value.src;
+    if (!sourceDimensions.value && imageProps.value.src) loadSourceDimensions(imageProps.value.src, request);
+  }
+}
+
+function dimensionsFromProperties() {
+  const width = imageProps.value.originalWidth;
+  const height = imageProps.value.originalHeight;
+  return width && height && width > 0 && height > 0 ? { width, height } : null;
+}
+
+function loadSourceDimensions(src: string, request: number) {
+  const image = new Image();
+  image.onload = () => {
+    if (request === previewRequest && image.naturalWidth && image.naturalHeight) {
+      sourceDimensions.value = { width: image.naturalWidth, height: image.naturalHeight };
+    }
+  };
+  image.src = src;
 }
 
 function revokePreviewUrl() {
@@ -320,6 +365,32 @@ label {
   font-size: 0.75rem;
   line-height: 1.3;
 }
+
+.resolution-details {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  margin-top: 0.5rem;
+  color: #6b7280;
+  font-size: 0.75rem;
+  line-height: 1.3;
+}
+
+.resolution-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.4rem;
+  margin-top: 0.5rem;
+  padding: 0.5rem;
+  border: 1px solid #d97706;
+  border-radius: 4px;
+  background: #fffbeb;
+  color: #92400e;
+  font-size: 0.75rem;
+  line-height: 1.35;
+}
+
+.resolution-warning svg { flex: 0 0 auto; }
 
 .text-input {
   width: 100%;

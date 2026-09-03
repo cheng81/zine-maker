@@ -3,6 +3,8 @@ import { ref } from 'vue';
 
 const IMAGE_CATALOG_PINNED_KEY = 'zineMaker.imageCatalogPinned';
 const LEFT_SIDEBAR_SPLIT_KEY = 'zineMaker.leftSidebarSplit';
+const EXPORT_DPI_KEY = 'zineMaker.exportDpi';
+const SUPPORTED_EXPORT_DPI = [150, 300, 600] as const;
 
 export const useUIStore = defineStore('ui', () => {
   const showTemplateSelector = ref(true);
@@ -23,6 +25,7 @@ export const useUIStore = defineStore('ui', () => {
   const showPageNumbers = ref(true);
   const showFoldMarks = ref(true);
   const showCutMarks = ref(true);
+  const exportDpi = ref(readExportDpi());
   const showStorageNotice = ref(false);
   const leftSidebarTab = ref<'pages' | 'images'>('pages');
   const imageCatalogPinned = ref(readBooleanPreference(IMAGE_CATALOG_PINNED_KEY, false));
@@ -79,6 +82,12 @@ export const useUIStore = defineStore('ui', () => {
     leftSidebarSplit.value = Math.min(0.75, Math.max(0.25, split));
     writePreference(LEFT_SIDEBAR_SPLIT_KEY, String(leftSidebarSplit.value));
   }
+  function setExportDpi(dpi: number): void {
+    exportDpi.value = SUPPORTED_EXPORT_DPI.includes(dpi as typeof SUPPORTED_EXPORT_DPI[number])
+      ? dpi
+      : 300;
+    writePreference(EXPORT_DPI_KEY, String(exportDpi.value));
+  }
   function togglePropertiesCollapsed(): void {
     propertiesCollapsed.value = !propertiesCollapsed.value;
   }
@@ -109,6 +118,7 @@ export const useUIStore = defineStore('ui', () => {
     showPageNumbers,
     showFoldMarks,
     showCutMarks,
+    exportDpi,
     showStorageNotice,
     leftSidebarTab,
     imageCatalogPinned,
@@ -126,6 +136,7 @@ export const useUIStore = defineStore('ui', () => {
     openImageCatalog,
     setImageCatalogPinned,
     setLeftSidebarSplit,
+    setExportDpi,
     togglePropertiesCollapsed,
     openStorageNotice,
     closeStorageNotice
@@ -147,6 +158,15 @@ function readNumberPreference(key: string, fallback: number): number {
     return Number.isFinite(value) && value >= 0.25 && value <= 0.75 ? value : fallback;
   } catch {
     return fallback;
+  }
+}
+
+function readExportDpi(): number {
+  try {
+    const value = Number(localStorage.getItem(EXPORT_DPI_KEY));
+    return SUPPORTED_EXPORT_DPI.includes(value as typeof SUPPORTED_EXPORT_DPI[number]) ? value : 300;
+  } catch {
+    return 300;
   }
 }
 
