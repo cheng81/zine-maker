@@ -6,7 +6,7 @@ import { debounce } from 'lodash-es';
 import type { ImageAssetRecord } from '@/stores/assetStore';
 import { getAssetUsageCount, migrateProjectAssetCatalog } from '@/utils/projectAssets';
 import { normalizePageBorder } from '@/utils/pageBorder';
-import { createSpreadCrops, findSpreadMembers, getSpreadPageSize, getValidSpread, isSpreadImage, pageHasSpread, unlinkInvalidSpreads } from '@/utils/imageSpread';
+import { createSpreadCrops, findSpreadMembers, getSpreadPageSize, getValidSpread, isSpreadImage, pageHasSpread, positionSpreadCrop, unlinkInvalidSpreads } from '@/utils/imageSpread';
 import { isValidImageCrop } from '@/utils/imageCrop';
 
 export const useProjectStore = defineStore('project', () => {
@@ -246,7 +246,7 @@ export const useProjectStore = defineStore('project', () => {
     });
   }
 
-  function createImageSpread(pageId: string, contentId: string, partnerPageId: string): string | null {
+  function createImageSpread(pageId: string, contentId: string, partnerPageId: string, sourceDimensions?: { width: number; height: number }): string | null {
     const project = currentProject.value;
     const page = getPageById(pageId);
     const partner = getPageById(partnerPageId);
@@ -259,7 +259,9 @@ export const useProjectStore = defineStore('project', () => {
     if (!size || !partnerSize || size.width !== partnerSize.width || size.height !== partnerSize.height) return null;
     const properties = source.properties as ImageProperties;
     // Source dimensions must come from the asset, never the element's transformed size.
-    const crops = createSpreadCrops(properties.originalWidth!, properties.originalHeight!, size.width, size.height);
+    const sourceWidth = sourceDimensions?.width ?? properties.originalWidth;
+    const sourceHeight = sourceDimensions?.height ?? properties.originalHeight;
+    const crops = createSpreadCrops(sourceWidth!, sourceHeight!, size.width, size.height);
     if (!crops || (!properties.src && properties.assetId === undefined)) return null;
 
     const spreadId = `spread-${crypto.randomUUID()}`;
@@ -269,7 +271,7 @@ export const useProjectStore = defineStore('project', () => {
       const half = JSON.parse(JSON.stringify(source)) as ZineContent;
       Object.assign(half, { id, x: 0, y: 0, width: size.width, height: size.height, rotation: 0 });
       delete half.groupId;
-      half.properties = { ...half.properties, crop: crops[side], spreadId, spreadSide: side, lockAspectRatio: false };
+      half.properties = { ...half.properties, originalWidth: sourceWidth, originalHeight: sourceHeight, crop: crops[side], spreadId, spreadSide: side, lockAspectRatio: false };
       return half;
     };
     const before = [page, partner].map(p => ({ pageId: p.id, content: JSON.parse(JSON.stringify(p.content)) as ZineContent[] }));
@@ -377,6 +379,14 @@ export const useProjectStore = defineStore('project', () => {
       ...properties, opacity: 1, filters: undefined,
       ...(crop ? { crop: crop[properties.spreadSide!] } : {}),
     } });
+  }
+
+  function setImageSpreadFocalPosition(spreadId: string, focal: { x: number; y: number }): void {
+    if (!currentProject.value) return;
+    const pair = getValidSpread(currentProject.value, spreadId);
+    if (!pair) return;
+    const crop = positionSpreadCrop(pair.left.properties.crop!, focal);
+    if (crop) updateSpreadContent(pair.left.content, { properties: { ...pair.left.properties, crop } });
   }
 
   function addAssetsToCatalog(assetIds: number[]): void {
@@ -889,6 +899,7 @@ export const useProjectStore = defineStore('project', () => {
     removeImageSpread,
     unlinkImageSpread,
     resetImage,
+    setImageSpreadFocalPosition,
     addAssetsToCatalog,
     removeAssetFromCatalog,
     updateContent,

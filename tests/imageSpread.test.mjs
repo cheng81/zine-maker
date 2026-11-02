@@ -3,6 +3,9 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import ts from 'typescript';
 import { createPinia, setActivePinia } from 'pinia';
+import { createSSRApp } from 'vue';
+import { renderToString } from '@vue/server-renderer';
+import { compileScript, parse } from '@vue/compiler-sfc';
 
 // Load application TypeScript without a browser; replace only IndexedDB persistence.
 const modules = new Map();
@@ -26,11 +29,34 @@ async function loadModule(path) {
   return url;
 }
 const { useProjectStore } = await import(await loadModule('stores/project'));
-const { createSpreadCrops, findSpreadMembers, getValidSpread } = await import(await loadModule('utils/imageSpread'));
+const { createSpreadCrops, findSpreadMembers, getValidSpread, getSpreadPartnerOptions, getSpreadFocalPosition } = await import(await loadModule('utils/imageSpread'));
 const { pageBorderSegments, resolvePageBorder, suppressedSpreadBorderEdges } = await import(await loadModule('utils/pageBorder'));
 
+async function loadSpreadComponent() {
+  const source = await readFile(new URL('../src/components/properties/ImageSpreadProperties.vue', import.meta.url), 'utf8');
+  const { descriptor } = parse(source);
+  const compiled = compileScript(descriptor, { id: 'spread-ui-test', inlineTemplate: true });
+  let { outputText } = ts.transpileModule(compiled.content, {
+    compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2020 },
+  });
+  for (const match of [...outputText.matchAll(/from ['"]([^'"]+)['"]/g)]) {
+    const specifier = match[1];
+    const url = specifier.startsWith('@/') ? await loadModule(specifier.slice(2)) : import.meta.resolve(specifier);
+    outputText = outputText.replace(match[0], `from ${JSON.stringify(url)}`);
+  }
+  return (await import(`data:text/javascript;base64,${Buffer.from(outputText).toString('base64')}`)).default;
+}
+const SpreadComponent = await loadSpreadComponent();
+let fixturePinia;
+async function renderSpread(content, overrides = {}) {
+  return renderToString(createSSRApp(SpreadComponent, {
+    content, sourceDimensions: { width: 2400, height: 600 }, sourceReady: true, sourceLoading: false, ...overrides,
+  }).use(fixturePinia));
+}
+
 function fixture({ pageCanvas = true } = {}) {
-  setActivePinia(createPinia());
+  fixturePinia = createPinia();
+  setActivePinia(fixturePinia);
   const store = useProjectStore();
   const template = {
     id: 'test', pageCount: 4,
@@ -425,5 +451,115 @@ test('border segments follow the page group through rotated and flipped print pl
       assert.deepEqual(top.getAbsoluteTransform().point({ x: 4, y: 4 }), left.getAbsoluteTransform().point({ x: 4, y: 4 }));
       group.destroy();
     }
+  }
+});
+
+test('partner choices describe first, last, occupied and differently sized pages', () => {
+  const { store } = fixture({ pageCanvas: false });
+  const project = store.currentProject;
+  const middle = getSpreadPartnerOptions(project, project.pages[1]);
+  assert.deepEqual(middle.map(option => [option.direction, option.pageNumber, option.reason]), [
+    ['previous', 1, ''], ['next', 3, ''],
+  ]);
+  assert.equal(getSpreadPartnerOptions(project, project.pages[0])[0].reason, 'No previous page.');
+  assert.equal(getSpreadPartnerOptions(project, project.pages[3])[1].reason, 'No next page.');
+  project.pages[0].content.push({ type: 'image', properties: { spreadId: 'occupied' } });
+  assert.match(getSpreadPartnerOptions(project, project.pages[1])[0].reason, /already contains/);
+  project.template.printLayout.pagePositions[2].height = 401;
+  assert.match(getSpreadPartnerOptions(project, project.pages[1])[1].reason, /same dimensions/);
+});
+
+test('legacy image creation uses loaded source dimensions in one history entry', () => {
+  const { store } = fixture();
+  const source = store.currentProject.pages[1].content[0];
+  delete source.properties.originalWidth;
+  delete source.properties.originalHeight;
+  const before = JSON.stringify(store.currentProject.pages);
+  const id = store.createImageSpread('page-2', 'source', 'page-1', { width: 2400, height: 600 });
+  const pair = getValidSpread(store.currentProject, id);
+  assert.ok(pair);
+  assert.equal(pair.left.properties.originalWidth, 2400);
+  assert.equal(pair.right.properties.originalHeight, 600);
+  store.undo();
+  assert.equal(JSON.stringify(store.currentProject.pages), before);
+  assert.equal(store.canUndo, false);
+  store.redo();
+  assert.ok(getValidSpread(store.currentProject, id));
+});
+
+test('shared focal controls preserve the exact seam at all extremes from either page', () => {
+  for (const side of ['left', 'right']) {
+    for (const [width, height] of [[2400, 600], [1200, 900], [600, 400], [1001, 701], [4321, 1234]]) {
+      const { store, id, contentId } = linkedFixture(side);
+      store.updateContent(contentId, { properties: { src: '', assetId: 8, originalWidth: width, originalHeight: height } });
+      for (const x of [0, 0.5, 1]) {
+        for (const y of [0, 0.5, 1]) {
+          store.setImageSpreadFocalPosition(id, { x, y });
+          const pair = getValidSpread(store.currentProject, id);
+          assert.ok(pair, `${width}×${height} at ${x},${y}`);
+          const left = pair.left.properties.crop;
+          const right = pair.right.properties.crop;
+          assert.equal(left.x + left.width, right.x);
+          assert.ok(right.x + right.width <= 1);
+          assert.ok(left.y + left.height <= 1);
+          const focal = getSpreadFocalPosition(left);
+          assert.ok(Math.abs(focal.x - (focal.canPanX ? x : 0.5)) < 1e-10);
+          assert.ok(Math.abs(focal.y - (focal.canPanY ? y : 0.5)) < 1e-10);
+        }
+      }
+      const before = JSON.stringify(store.currentProject.pages);
+      store.setImageSpreadFocalPosition(id, { x: 0, y: 0 });
+      if (getSpreadFocalPosition(getValidSpread(store.currentProject, id).left.properties.crop).canPanX
+        || getSpreadFocalPosition(getValidSpread(store.currentProject, id).left.properties.crop).canPanY) {
+        store.undo();
+        assert.equal(JSON.stringify(store.currentProject.pages), before);
+        store.redo();
+        assert.ok(getValidSpread(store.currentProject, id));
+      }
+    }
+  }
+});
+
+test('spread UI renders explicit page choices and useful disabled source states', async () => {
+  const { store } = fixture();
+  const content = store.currentProject.pages[1].content[0];
+  const html = await renderSpread(content);
+  assert.match(html, /Previous page · Page 1/);
+  assert.match(html, /Next page · Page 3/);
+  assert.match(html, /Choose the other page/);
+  // With two available partners, the user must explicitly choose one.
+  assert.match(html, /<button[^>]*disabled[^>]*>Create Spread/);
+  for (const [overrides, message] of [
+    [{ sourceDimensions: { width: 600, height: 900 } }, /Choose a landscape image/],
+    [{ sourceReady: false }, /source image is unavailable/],
+    [{ sourceLoading: true }, /Loading image/],
+  ]) {
+    const disabled = await renderSpread(content, overrides);
+    assert.match(disabled, message);
+    assert.match(disabled, /<fieldset disabled/);
+    assert.match(disabled, /<button[^>]*disabled[^>]*>Create Spread/);
+  }
+});
+
+test('spread UI shows first/last page partner numbers and labels both halves and focal controls', async () => {
+  for (const [index, expected] of [[0, /Pages 1 and 2 will be filled/], [3, /Pages 3 and 4 will be filled/]]) {
+    const { store, original } = fixture();
+    store.currentProject.pages[1].content = [];
+    store.currentProject.pages[index].content.push(original);
+    const html = await renderSpread(store.currentProject.pages[index].content[0]);
+    assert.match(html, expected);
+    assert.match(html, /<button type="button">Create Spread/);
+  }
+  for (const side of ['left', 'right']) {
+    const { store, contentId } = linkedFixture(side);
+    const html = await renderSpread(store.getContentById(contentId));
+    assert.match(html, new RegExp(`Pages 2–3 · ${side === 'left' ? 'Left' : 'Right'} half`));
+    assert.match(html, /Horizontal focal position/);
+    assert.match(html, /Vertical focal position/);
+    assert.match(html, /for="spread-[^"]+-x"/);
+    assert.match(html, /aria-describedby="spread-[^"]+-x-hint"/);
+    assert.match(html, /no room to pan/);
+    assert.match(html, /Unlink Spread/);
+    assert.match(html, /Delete Spread/);
   }
 });

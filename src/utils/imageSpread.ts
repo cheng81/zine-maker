@@ -33,6 +33,42 @@ export function getSpreadPageSize(project: ZineProject, page: ZinePage) {
     ? { width: size.width, height: size.height } : null;
 }
 
+export function getSpreadPartnerOptions(project: ZineProject, page: ZinePage) {
+  const index = project.pages.findIndex(candidate => candidate.id === page.id);
+  const size = getSpreadPageSize(project, page);
+  return (['previous', 'next'] as const).map(direction => {
+    const partner = index < 0 ? undefined : project.pages[index + (direction === 'previous' ? -1 : 1)];
+    const partnerSize = partner ? getSpreadPageSize(project, partner) : null;
+    const reason = !partner ? `No ${direction} page.`
+      : pageHasSpread(page) ? 'This page already contains a spread.'
+      : pageHasSpread(partner) ? 'This page already contains a spread.'
+      : !size || !partnerSize || size.width !== partnerSize.width || size.height !== partnerSize.height
+        ? 'Pages must have the same dimensions.' : '';
+    return { direction, pageId: partner?.id, pageNumber: partner?.pageNumber, reason };
+  });
+}
+
+/** Focal positions describe travel through the available cover-crop area, from 0 to 1. */
+export function getSpreadFocalPosition(left: NormalizedImageCrop) {
+  const travelX = Math.max(0, 1 - left.width * 2);
+  const travelY = Math.max(0, 1 - left.height);
+  return {
+    x: travelX > 1e-12 ? Math.max(0, Math.min(1, left.x / travelX)) : 0.5,
+    y: travelY > 1e-12 ? Math.max(0, Math.min(1, left.y / travelY)) : 0.5,
+    canPanX: travelX > 1e-12,
+    canPanY: travelY > 1e-12,
+  };
+}
+
+export function positionSpreadCrop(left: NormalizedImageCrop, focal: { x: number; y: number }): NormalizedImageCrop | null {
+  if (!isValidImageCrop(left) || left.width > 0.5 || ![focal.x, focal.y].every(Number.isFinite)) return null;
+  let x = Math.max(0, 1 - left.width * 2) * Math.max(0, Math.min(1, focal.x));
+  const y = Math.max(0, 1 - left.height) * Math.max(0, Math.min(1, focal.y));
+  // Keep the far edge in bounds even when floating-point addition rounds upward.
+  if (x + left.width + left.width > 1) x = Math.max(0, x - Number.EPSILON);
+  return { ...left, x, y };
+}
+
 /** Centered cover composition over two equal pages, split without pixel rounding. */
 export function createSpreadCrops(sourceWidth: number, sourceHeight: number, pageWidth: number, pageHeight: number):
   { left: NormalizedImageCrop; right: NormalizedImageCrop } | null {

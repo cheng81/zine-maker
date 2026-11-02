@@ -45,6 +45,9 @@
       </div>
     </div>
 
+    <ImageSpreadProperties :content="content" :source-dimensions="sourceDimensions"
+      :source-ready="sourceReady" :source-loading="sourceLoading" />
+
     <div class="property-section">
       <h4>Appearance</h4>
       <div class="property-group">
@@ -89,10 +92,6 @@
         <button @click="duplicateImage" class="action-button">
           {{ imageProps.spreadId ? 'Duplicate Half as Image' : 'Duplicate Image' }}
         </button>
-        <template v-if="imageProps.spreadId">
-          <button @click="projectStore.unlinkImageSpread(imageProps.spreadId)" class="action-button">Unlink Spread</button>
-          <button @click="projectStore.removeImageSpread(imageProps.spreadId)" class="action-button">Delete Spread</button>
-        </template>
       </div>
     </div>
   </div>
@@ -105,6 +104,7 @@ import { useProjectStore } from '@/stores/project';
 import { useAssetStore } from '@/stores/assetStore';
 import { useUIStore } from '@/stores/ui';
 import { ImageOff, TriangleAlert } from 'lucide-vue-next';
+import ImageSpreadProperties from './ImageSpreadProperties.vue';
 
 interface Props {
   content: ZineContent;
@@ -125,6 +125,8 @@ const previewSrc = ref('');
 const changingImage = ref(false);
 const imageError = ref('');
 const sourceDimensions = ref<{ width: number; height: number } | null>(null);
+const sourceReady = ref(false);
+const sourceLoading = ref(false);
 let previewObjectUrl: string | null = null;
 let previewRequest = 0;
 
@@ -144,7 +146,7 @@ const resolutionWarning = computed(() => {
 });
 
 watch(
-  () => [imageProps.value.assetId, imageProps.value.src] as const,
+  () => [props.content.id, imageProps.value.assetId, imageProps.value.src] as const,
   () => loadPreview(),
   { immediate: true }
 );
@@ -208,24 +210,34 @@ async function loadPreview() {
   revokePreviewUrl();
   previewSrc.value = '';
   sourceDimensions.value = dimensionsFromProperties();
+  sourceReady.value = false;
+  sourceLoading.value = true;
   imageError.value = '';
 
   const assetId = imageProps.value.assetId;
   if (typeof assetId === 'number') {
     try {
       const asset = await assetStore.getAssetRecord(assetId);
-      if (request !== previewRequest || !asset) return;
+      if (request !== previewRequest) return;
+      if (!asset) {
+        imageError.value = 'The source image is missing from the image catalog.';
+        return;
+      }
       sourceDimensions.value = { width: asset.width, height: asset.height };
       previewObjectUrl = URL.createObjectURL(asset.file);
       previewSrc.value = previewObjectUrl;
+      sourceReady.value = true;
     } catch {
       if (request === previewRequest) imageError.value = 'Image preview could not be loaded.';
+    } finally {
+      if (request === previewRequest) sourceLoading.value = false;
     }
     return;
   }
   if (request === previewRequest) {
     previewSrc.value = imageProps.value.src;
-    if (!sourceDimensions.value && imageProps.value.src) loadSourceDimensions(imageProps.value.src, request);
+    if (imageProps.value.src) loadSourceDimensions(imageProps.value.src, request);
+    else sourceLoading.value = false;
   }
 }
 
@@ -240,6 +252,14 @@ function loadSourceDimensions(src: string, request: number) {
   image.onload = () => {
     if (request === previewRequest && image.naturalWidth && image.naturalHeight) {
       sourceDimensions.value = { width: image.naturalWidth, height: image.naturalHeight };
+      sourceReady.value = true;
+      sourceLoading.value = false;
+    }
+  };
+  image.onerror = () => {
+    if (request === previewRequest) {
+      imageError.value = 'The source image could not be loaded.';
+      sourceLoading.value = false;
     }
   };
   image.src = src;
