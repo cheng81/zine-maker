@@ -7,6 +7,10 @@ export interface SpreadMember {
   properties: ImageProperties;
 }
 
+export function isSpreadImage(content: ZineContent | null | undefined): boolean {
+  return content?.type === 'image' && Boolean((content.properties as ImageProperties).spreadId);
+}
+
 export function findSpreadMembers(project: ZineProject, spreadId: string): SpreadMember[] {
   if (!spreadId) return [];
   return project.pages.flatMap(page => page.content.flatMap(content => {

@@ -6,7 +6,8 @@ import { debounce } from 'lodash-es';
 import type { ImageAssetRecord } from '@/stores/assetStore';
 import { getAssetUsageCount, migrateProjectAssetCatalog } from '@/utils/projectAssets';
 import { normalizePageBorder } from '@/utils/pageBorder';
-import { createSpreadCrops, findSpreadMembers, getSpreadPageSize, pageHasSpread, unlinkInvalidSpreads } from '@/utils/imageSpread';
+import { createSpreadCrops, findSpreadMembers, getSpreadPageSize, getValidSpread, isSpreadImage, pageHasSpread, unlinkInvalidSpreads } from '@/utils/imageSpread';
+import { isValidImageCrop } from '@/utils/imageCrop';
 
 export const useProjectStore = defineStore('project', () => {
   const currentProject = ref<ZineProject | null>(null);
@@ -301,6 +302,83 @@ export const useProjectStore = defineStore('project', () => {
     return true;
   }
 
+  function unlinkImageSpread(spreadId: string): boolean {
+    if (!currentProject.value) return false;
+    const members = findSpreadMembers(currentProject.value, spreadId);
+    if (!members.length) return false;
+    const before = [...new Set(members.map(member => member.page))].map(page => ({
+      pageId: page.id, content: JSON.parse(JSON.stringify(page.content)) as ZineContent[],
+    }));
+    members.forEach(({ properties }) => {
+      delete properties.spreadId;
+      delete properties.spreadSide;
+    });
+    recordSpreadChange('unlinkImageSpread', before);
+    return true;
+  }
+
+  function updateSpreadContent(content: ZineContent, updates: Partial<ZineContent>): void {
+    const project = currentProject.value;
+    const previous = content.properties as ImageProperties;
+    if (!project || !previous.spreadId) return;
+    const pair = getValidSpread(project, previous.spreadId);
+    if (!pair) return;
+    const incoming = updates.properties as Partial<ImageProperties> | undefined;
+    const shared = { ...previous, ...incoming };
+    const replaced = shared.src !== previous.src || shared.assetId !== previous.assetId
+      || shared.originalWidth !== previous.originalWidth || shared.originalHeight !== previous.originalHeight;
+    let leftCrop = pair.left.properties.crop!;
+    let rightCrop = pair.right.properties.crop!;
+    if (replaced) {
+      // A replacement must supply its own intrinsic dimensions.
+      if (!incoming?.originalWidth || !incoming.originalHeight || (!shared.src && shared.assetId === undefined)) return;
+      const crops = createSpreadCrops(shared.originalWidth!, shared.originalHeight!, content.width, content.height);
+      if (!crops) return;
+      leftCrop = crops.left;
+      rightCrop = crops.right;
+    } else if (incoming && 'crop' in incoming && JSON.stringify(incoming.crop) !== JSON.stringify(previous.crop)) {
+      const crop = incoming.crop;
+      if (!isValidImageCrop(crop)) return;
+      const x = previous.spreadSide === 'right' ? crop.x - crop.width : crop.x;
+      const combined = { ...crop, x, width: crop.width * 2 };
+      if (!isValidImageCrop(combined)) return;
+      const ratio = combined.width * shared.originalWidth! / (combined.height * shared.originalHeight!);
+      if (!Number.isFinite(ratio) || Math.abs(ratio / (content.width * 2 / content.height) - 1) > 1e-8) return;
+      leftCrop = { ...crop, x };
+      rightCrop = { ...crop, x: x + crop.width };
+    }
+    const members = [pair.left, pair.right];
+    const before = members.map(({ page }) => ({ pageId: page.id, content: JSON.parse(JSON.stringify(page.content)) as ZineContent[] }));
+    for (const member of members) {
+      for (const key of ['src', 'assetId', 'alt', 'opacity', 'filters', 'originalWidth', 'originalHeight'] as const) {
+        Object.assign(member.properties, { [key]: shared[key] });
+      }
+      member.properties.crop = member === pair.left ? leftCrop : rightCrop;
+      member.properties.lockAspectRatio = false;
+      if (updates.visible !== undefined) member.content.visible = updates.visible;
+    }
+    // Geometry, identity, and spread metadata cannot be edited independently.
+    for (const key of ['zIndex', 'name', 'locked'] as const) {
+      if (key in updates) Object.assign(content, { [key]: updates[key] });
+    }
+    if (JSON.stringify(before.map(item => item.content)) === JSON.stringify(members.map(({ page }) => page.content))) return;
+    members.forEach(({ page }) => page.content.sort((a, b) => a.zIndex - b.zIndex));
+    recordSpreadChange('updateImageSpread', before);
+  }
+
+  function resetImage(contentId: string): void {
+    const content = getContentById(contentId);
+    if (content?.type !== 'image') return;
+    const properties = content.properties as ImageProperties;
+    const crop = properties.spreadId
+      ? createSpreadCrops(properties.originalWidth!, properties.originalHeight!, content.width, content.height)
+      : null;
+    updateContent(contentId, { properties: {
+      ...properties, opacity: 1, filters: undefined,
+      ...(crop ? { crop: crop[properties.spreadSide!] } : {}),
+    } });
+  }
+
   function addAssetsToCatalog(assetIds: number[]): void {
     if (!currentProject.value || assetIds.length === 0) return;
     currentProject.value.assetIds = [...new Set([
@@ -325,6 +403,10 @@ export const useProjectStore = defineStore('project', () => {
     const contentIndex = currentPage.value.content.findIndex(c => c.id === contentId);
     if (contentIndex !== -1) {
       const existing = currentPage.value.content[contentIndex];
+      if (isSpreadImage(existing)) {
+        updateSpreadContent(existing, updates);
+        return;
+      }
       const prev = JSON.parse(JSON.stringify(existing)) as ZineContent;
       const next = { ...existing, ...updates } as ZineContent;
       // Maintain z-order by sorting on zIndex after update
@@ -362,6 +444,10 @@ export const useProjectStore = defineStore('project', () => {
     const contentIndex = currentPage.value.content.findIndex(c => c.id === contentId);
     if (contentIndex !== -1) {
       const removed = currentPage.value.content[contentIndex];
+      if (isSpreadImage(removed)) {
+        removeImageSpread((removed.properties as ImageProperties).spreadId!);
+        return;
+      }
       const removedSnapshot = JSON.parse(JSON.stringify(removed)) as ZineContent;
       currentPage.value.content.splice(contentIndex, 1);
       selectedContentIds.value = selectedContentIds.value.filter(id => id !== contentId);
@@ -708,9 +794,15 @@ export const useProjectStore = defineStore('project', () => {
 
     const duplicated = {
       ...content,
+      properties: JSON.parse(JSON.stringify(content.properties)),
       x: content.x + 20,
       y: content.y + 20
     };
+    // A duplicate is an independent cropped image on the current page.
+    if (content.type === 'image') {
+      delete duplicated.properties.spreadId;
+      delete duplicated.properties.spreadSide;
+    }
     delete (duplicated as any).id; // Remove id so addContentToCurrentPage creates a new one
     addContentToCurrentPage(duplicated);
   }
@@ -795,6 +887,8 @@ export const useProjectStore = defineStore('project', () => {
     addImageAssetToPage,
     createImageSpread,
     removeImageSpread,
+    unlinkImageSpread,
+    resetImage,
     addAssetsToCatalog,
     removeAssetFromCatalog,
     updateContent,

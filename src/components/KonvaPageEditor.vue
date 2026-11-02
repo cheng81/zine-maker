@@ -112,6 +112,11 @@
             <!-- Page border stays above page content and inside the printable edge. -->
             <v-rect v-if="resolvedPageBorder.width > 0" :config="pageBorderConfig" />
 
+            <!-- Linked halves remain selectable without draggable transform handles. -->
+            <v-rect v-for="node in selectedSpreadNodes" :key="`spread-selection-${node.id}`"
+              :config="{ x: node.config.x, y: node.config.y, width: node.config.width, height: node.config.height, stroke: '#2563eb', strokeWidth: 1, listening: false }"
+            />
+
             <!-- Selection overlay to keep group/multi selection when clicking inside bounds -->
             <v-rect
               v-if="hasSelection && selectionBounds"
@@ -180,6 +185,7 @@ import AppToolbar from './AppToolbar.vue';
 import { useUIStore } from '@/stores/ui';
 import { getDraggedAssetId, hasDraggedAsset } from '@/utils/imageDrag';
 import { toKonvaImageCrop } from '@/utils/imageCrop';
+import { isSpreadImage } from '@/utils/imageSpread';
 import { pageBorderRect, resolvePageBorder } from '@/utils/pageBorder';
 
 const projectStore = useProjectStore();
@@ -279,6 +285,9 @@ const pageBoundaryHighlightConfig = computed(() => {
 
 // Build Konva configs from current page content
 const pageNodes = shallowRef<any[]>([]);
+const selectedSpreadNodes = computed(() => pageNodes.value.filter(node =>
+  selectedIds.value.includes(node.id) && isSpreadImage(projectStore.getContentById(node.id))
+));
 
 watch(() => projectStore.currentPage?.content, async (content) => {
   if (!content) {
@@ -371,7 +380,7 @@ watch(() => projectStore.currentPage?.content, async (content) => {
           crop: toKonvaImageCrop(p.crop, imageObj.naturalWidth, imageObj.naturalHeight),
           opacity: p.opacity,
           visible: isVisible,
-          draggable: toolsStore.activeTool === 'select' && isSelected && !isLocked,
+          draggable: toolsStore.activeTool === 'select' && isSelected && !isLocked && !p.spreadId,
           listening: !isLocked
         }
       };
@@ -437,6 +446,7 @@ function attachTransformer() {
 
     const nodesToAttach: Konva.Node[] = [];
     selectedIds.value.forEach((id) => {
+      if (isSpreadImage(projectStore.getContentById(id))) return;
       const node = stage.findOne(`#${id}`);
       if (node) {
         nodesToAttach.push(node as Konva.Node);
@@ -1095,10 +1105,10 @@ function onStageMouseMove() {
       const dy = p.y - pointerDownPos.y;
       if (Math.hypot(dx, dy) > DRAG_THRESHOLD) {
         const tr = transformerRef.value?.getNode?.();
-        if (tr && tr.nodes().length > 0) {
+        const stageTarget = (stage as any)._pointerdownTarget as Konva.Node | undefined;
+        if (tr && tr.nodes().length > 0 && !isSpreadImage(projectStore.getContentById(stageTarget?.id() || ''))) {
           // enable dragging for selected nodes and begin dragging the primary target
           tr.nodes().forEach((n: any) => n.draggable(true));
-          const stageTarget = (stage as any)._pointerdownTarget as Konva.Node | undefined;
           const primary = stageTarget && tr.nodes().some((n: Konva.Node) => n.id() === stageTarget.id())
             ? stageTarget
             : tr.nodes()[0];

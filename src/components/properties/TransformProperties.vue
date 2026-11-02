@@ -1,5 +1,7 @@
 <template>
   <div class="transform-properties">
+    <p v-if="hasSpread">Spread images fill their pages. Unlink the spread to move or resize either half.</p>
+    <template v-else>
     <div class="property-section">
       <h4>Transform</h4>
       
@@ -127,6 +129,7 @@
         </button>
       </div>
     </div>
+    </template>
   </div>
 </template>
 
@@ -136,6 +139,7 @@ import type { ImageProperties, ZineContent } from '@/types';
 import NumberInput from './NumberInput.vue';
 import { useProjectStore } from '@/stores/project';
 import { useAssetStore } from '@/stores/assetStore';
+import { isSpreadImage } from '@/utils/imageSpread';
 
 interface Props {
   content: ZineContent[];
@@ -149,6 +153,7 @@ const props = defineProps<Props>();
 const emit = defineEmits<Emits>();
 const projectStore = useProjectStore();
 const assetStore = useAssetStore();
+const hasSpread = computed(() => props.content.some(isSpreadImage));
 const originalDimensions = ref<{ width: number; height: number } | null>(null);
 const loadingOriginalDimensions = ref(false);
 let dimensionRequest = 0;

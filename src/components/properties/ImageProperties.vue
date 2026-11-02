@@ -84,11 +84,15 @@
       <h4>Actions</h4>
       <div class="property-group">
         <button @click="resetImage" class="action-button">
-          Reset to Original
+          {{ imageProps.spreadId ? 'Reset Spread' : 'Reset to Original' }}
         </button>
         <button @click="duplicateImage" class="action-button">
-          Duplicate Image
+          {{ imageProps.spreadId ? 'Duplicate Half as Image' : 'Duplicate Image' }}
         </button>
+        <template v-if="imageProps.spreadId">
+          <button @click="projectStore.unlinkImageSpread(imageProps.spreadId)" class="action-button">Unlink Spread</button>
+          <button @click="projectStore.removeImageSpread(imageProps.spreadId)" class="action-button">Delete Spread</button>
+        </template>
       </div>
     </div>
   </div>
@@ -129,8 +133,8 @@ const effectivePpi = computed(() => {
   const dimensions = sourceDimensions.value;
   if (!dimensions || props.content.width <= 0 || props.content.height <= 0) return null;
   return Math.round(Math.min(
-    dimensions.width / (props.content.width / 72),
-    dimensions.height / (props.content.height / 72),
+    dimensions.width * (imageProps.value.crop?.width ?? 1) / (props.content.width / 72),
+    dimensions.height * (imageProps.value.crop?.height ?? 1) / (props.content.height / 72),
   ));
 });
 const resolutionWarning = computed(() => {
@@ -252,14 +256,7 @@ function roundPixels(value: number) {
 }
 
 function resetImage() {
-  // Reset filters and opacity
-  emit('update', props.content.id, {
-    properties: { 
-      ...imageProps.value, 
-      opacity: 1,
-      filters: undefined
-    }
-  });
+  projectStore.resetImage(props.content.id);
 }
 
 function duplicateImage() {
