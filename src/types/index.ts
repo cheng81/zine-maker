@@ -99,6 +99,8 @@ export interface ImageProperties {
   originalWidth?: number;
   originalHeight?: number;
   crop?: NormalizedImageCrop;
+  spreadId?: string;
+  spreadSide?: 'left' | 'right';
 }
 
 export interface ShapeProperties {

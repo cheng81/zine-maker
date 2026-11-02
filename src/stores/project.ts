@@ -1,11 +1,12 @@
 import { defineStore } from 'pinia';
 import { ref, computed, watch, toRaw } from 'vue';
-import type { ZineProject, ZinePage, ZineContent, ZineTemplate, ExportOptions, PageBorder } from '@/types';
+import type { ZineProject, ZinePage, ZineContent, ZineTemplate, ExportOptions, PageBorder, ImageProperties } from '@/types';
 import { saveProject } from '@/utils/persistence';
 import { debounce } from 'lodash-es';
 import type { ImageAssetRecord } from '@/stores/assetStore';
 import { getAssetUsageCount, migrateProjectAssetCatalog } from '@/utils/projectAssets';
 import { normalizePageBorder } from '@/utils/pageBorder';
+import { createSpreadCrops, findSpreadMembers, getSpreadPageSize, pageHasSpread, unlinkInvalidSpreads } from '@/utils/imageSpread';
 
 export const useProjectStore = defineStore('project', () => {
   const currentProject = ref<ZineProject | null>(null);
@@ -242,6 +243,62 @@ export const useProjectStore = defineStore('project', () => {
         originalHeight: asset.height,
       },
     });
+  }
+
+  function createImageSpread(pageId: string, contentId: string, partnerPageId: string): string | null {
+    const project = currentProject.value;
+    const page = getPageById(pageId);
+    const partner = getPageById(partnerPageId);
+    const source = page?.content.find(content => content.id === contentId && content.type === 'image');
+    if (!project || !page || !partner || !source
+      || Math.abs(project.pages.indexOf(page) - project.pages.indexOf(partner)) !== 1
+      || pageHasSpread(page) || pageHasSpread(partner)) return null;
+    const size = getSpreadPageSize(project, page);
+    const partnerSize = getSpreadPageSize(project, partner);
+    if (!size || !partnerSize || size.width !== partnerSize.width || size.height !== partnerSize.height) return null;
+    const properties = source.properties as ImageProperties;
+    // Source dimensions must come from the asset, never the element's transformed size.
+    const crops = createSpreadCrops(properties.originalWidth!, properties.originalHeight!, size.width, size.height);
+    if (!crops || (!properties.src && properties.assetId === undefined)) return null;
+
+    const spreadId = `spread-${crypto.randomUUID()}`;
+    const partnerId = `content-${crypto.randomUUID()}`;
+    const sourceSide = project.pages.indexOf(page) < project.pages.indexOf(partner) ? 'left' : 'right';
+    const makeHalf = (id: string, side: 'left' | 'right'): ZineContent => {
+      const half = JSON.parse(JSON.stringify(source)) as ZineContent;
+      Object.assign(half, { id, x: 0, y: 0, width: size.width, height: size.height, rotation: 0 });
+      delete half.groupId;
+      half.properties = { ...half.properties, crop: crops[side], spreadId, spreadSide: side, lockAspectRatio: false };
+      return half;
+    };
+    const before = [page, partner].map(p => ({ pageId: p.id, content: JSON.parse(JSON.stringify(p.content)) as ZineContent[] }));
+    page.content.splice(page.content.indexOf(source), 1, makeHalf(source.id, sourceSide));
+    partner.content.push(makeHalf(partnerId, sourceSide === 'left' ? 'right' : 'left'));
+    partner.content.sort((a, b) => a.zIndex - b.zIndex);
+    recordSpreadChange('createImageSpread', before);
+    return spreadId;
+  }
+
+  function recordSpreadChange(name: string, before: { pageId: string; content: ZineContent[] }[]): void {
+    const after = before.map(({ pageId }) => ({ pageId, content: JSON.parse(JSON.stringify(getPageById(pageId)!.content)) as ZineContent[] }));
+    const apply = (snapshot: typeof before) => snapshot.forEach(({ pageId, content }) => {
+      const page = getPageById(pageId);
+      if (page) page.content = JSON.parse(JSON.stringify(content));
+    });
+    pushHistory({ name, undo: () => apply(before), redo: () => apply(after) });
+  }
+
+  function removeImageSpread(spreadId: string): boolean {
+    if (!currentProject.value) return false;
+    const members = findSpreadMembers(currentProject.value, spreadId);
+    if (!members.length) return false;
+    const pages = [...new Set(members.map(member => member.page))];
+    const before = pages.map(page => ({ pageId: page.id, content: JSON.parse(JSON.stringify(page.content)) as ZineContent[] }));
+    const ids = new Set(members.map(member => member.content.id));
+    pages.forEach(page => { page.content = page.content.filter(content => !ids.has(content.id)); });
+    selectedContentIds.value = selectedContentIds.value.filter(id => !ids.has(id));
+    recordSpreadChange('removeImageSpread', before);
+    return true;
   }
 
   function addAssetsToCatalog(assetIds: number[]): void {
@@ -677,6 +734,8 @@ export const useProjectStore = defineStore('project', () => {
     const [moved] = pages.splice(fromIndex, 1);
     pages.splice(toIndex, 0, moved);
     pages.forEach((p, i) => { p.pageNumber = i + 1; });
+    unlinkInvalidSpreads(currentProject.value);
+    const nextPages = JSON.parse(JSON.stringify(pages)) as ZinePage[];
 
     // Follow the currently-viewed page
     if (currentPageIndex.value === fromIndex) {
@@ -694,19 +753,12 @@ export const useProjectStore = defineStore('project', () => {
       name: 'reorderPages',
       undo: () => {
         if (!currentProject.value) return;
-        currentProject.value.pages = prevPages.map(p => {
-          const existing = currentProject.value!.pages.find(ep => ep.id === p.id);
-          return existing ? Object.assign(existing, p) : p;
-        });
         currentProject.value.pages = JSON.parse(JSON.stringify(prevPages));
         currentPageIndex.value = prevPageIndex;
       },
       redo: () => {
         if (!currentProject.value) return;
-        const pages = currentProject.value.pages;
-        const [moved] = pages.splice(fromIndex, 1);
-        pages.splice(toIndex, 0, moved);
-        pages.forEach((p, i) => { p.pageNumber = i + 1; });
+        currentProject.value.pages = JSON.parse(JSON.stringify(nextPages));
         currentPageIndex.value = newPageIndex;
       }
     });
@@ -741,6 +793,8 @@ export const useProjectStore = defineStore('project', () => {
     addContentToPage,
     addContentToCurrentPage,
     addImageAssetToPage,
+    createImageSpread,
+    removeImageSpread,
     addAssetsToCatalog,
     removeAssetFromCatalog,
     updateContent,
