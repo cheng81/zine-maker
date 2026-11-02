@@ -27,6 +27,7 @@ async function loadModule(path) {
 }
 const { useProjectStore } = await import(await loadModule('stores/project'));
 const { createSpreadCrops, findSpreadMembers, getValidSpread } = await import(await loadModule('utils/imageSpread'));
+const { pageBorderSegments, resolvePageBorder, suppressedSpreadBorderEdges } = await import(await loadModule('utils/pageBorder'));
 
 function fixture({ pageCanvas = true } = {}) {
   setActivePinia(createPinia());
@@ -318,4 +319,111 @@ test('ordinary image transforms, reset, duplicate and deletion retain existing b
   assert.equal(store.currentPage.content.length, 1);
   for (let i = 0; i < 4; i++) store.undo();
   assert.deepEqual(JSON.parse(JSON.stringify(store.currentPage.content)), [original]);
+});
+
+test('border segments preserve inset, square corners, width, color and page overrides', () => {
+  const { store } = fixture();
+  const project = store.currentProject;
+  const page = project.pages[1];
+  for (const width of [0, 1, 8, 40, 100]) {
+    for (const color of ['#123456', '#ff0000']) {
+      project.pageBorder = { width, color };
+      const border = resolvePageBorder(project, page);
+      const segments = pageBorderSegments(300, 400, border);
+      assert.equal(segments.length, width ? 4 : 0);
+      for (const segment of segments) {
+        assert.equal(segment.strokeWidth, width);
+        assert.equal(segment.stroke, color);
+        assert.equal(segment.lineCap, 'square');
+        assert.equal(segment.listening, false);
+        assert.ok(segment.points.every((point, i) => point >= width / 2 && point <= (i % 2 ? 400 : 300) - width / 2));
+      }
+      if (width) {
+        assert.deepEqual(segments[0].points, [width / 2, width / 2, 300 - width / 2, width / 2]);
+        // Square caps extend the top border to both physical page edges, even with an inner edge suppressed.
+        assert.equal(segments[0].points[0] - width / 2, 0);
+        assert.equal(segments[0].points[2] + width / 2, 300);
+        for (let i = 0; i < 4; i++) {
+          assert.deepEqual(segments[i].points.slice(2), segments[(i + 1) % 4].points.slice(0, 2));
+        }
+      }
+    }
+  }
+  page.border = { width: 7, color: '#abcdef' };
+  assert.deepEqual(resolvePageBorder(project, page), page.border);
+  page.border.width = 0;
+  assert.deepEqual(pageBorderSegments(300, 400, resolvePageBorder(project, page)), []);
+  assert.equal(pageBorderSegments(20, 30, { width: 100, color: '#000' })[0].strokeWidth, 20);
+  for (const size of [0, -1, NaN, Infinity]) {
+    assert.deepEqual(pageBorderSegments(size, 400, { width: 5, color: '#000' }), []);
+  }
+});
+
+test('only the inner edges of a valid visible spread are suppressed without changing settings', () => {
+  const { store, id } = linkedFixture('left');
+  const project = store.currentProject;
+  project.pageBorder = { width: 8, color: '#123456' };
+  project.pages[2].border = { width: 12, color: '#abcdef' };
+  const saved = JSON.stringify([project.pageBorder, project.pages.map(page => page.border)]);
+  const pair = getValidSpread(project, id);
+  assert.deepEqual(suppressedSpreadBorderEdges(project, pair.left.page), ['right']);
+  assert.deepEqual(suppressedSpreadBorderEdges(project, pair.right.page), ['left']);
+  assert.deepEqual(suppressedSpreadBorderEdges(project, project.pages[0]), []);
+  for (const side of ['left', 'right']) {
+    const { page } = pair[side];
+    const border = resolvePageBorder(project, page);
+    const segments = pageBorderSegments(300, 400, border, suppressedSpreadBorderEdges(project, page));
+    assert.deepEqual(segments.map(segment => segment.edge), side === 'left' ? ['top', 'bottom', 'left'] : ['top', 'right', 'bottom']);
+    assert.ok(segments.every(segment => segment.stroke === border.color && segment.strokeWidth === border.width));
+  }
+  assert.equal(JSON.stringify([project.pageBorder, project.pages.map(page => page.border)]), saved);
+  pair.right.content.visible = false;
+  assert.deepEqual(suppressedSpreadBorderEdges(project, pair.left.page), []);
+  assert.deepEqual(suppressedSpreadBorderEdges(project, pair.right.page), []);
+});
+
+test('deleting, unlinking and invalidating a spread restores borders, including through history', () => {
+  for (const action of ['delete', 'unlink', 'reorder', 'orphan', 'brokenCrop']) {
+    const { store, id, contentId } = linkedFixture('left');
+    const project = store.currentProject;
+    const leftId = getValidSpread(project, id).left.page.id;
+    const rightId = getValidSpread(project, id).right.page.id;
+    const hidden = () => [leftId, rightId].map(pageId => suppressedSpreadBorderEdges(project, project.pages.find(page => page.id === pageId)));
+    assert.deepEqual(hidden(), [['right'], ['left']]);
+    if (action === 'delete') store.deleteContent(contentId);
+    if (action === 'unlink') store.unlinkImageSpread(id);
+    if (action === 'reorder') store.reorderPages(2, 3);
+    if (action === 'orphan') getValidSpread(project, id).right.page.content = [];
+    if (action === 'brokenCrop') getValidSpread(project, id).right.properties.crop.x += 0.01;
+    assert.deepEqual(hidden(), [[], []]);
+    if (['delete', 'unlink', 'reorder'].includes(action)) {
+      store.undo();
+      assert.deepEqual(hidden(), [['right'], ['left']]);
+      store.redo();
+      assert.deepEqual(hidden(), [[], []]);
+    }
+  }
+});
+
+test('border segments follow the page group through rotated and flipped print placements', async () => {
+  // Use Konva's browser entry so geometry can be checked without a native canvas dependency.
+  const { default: Konva } = await import('konva/lib/index.js');
+  for (const rotation of [0, 90, 180, 270]) {
+    for (const flipped of [false, true]) {
+      const group = new Konva.Group({ x: 250, y: 350, offsetX: 150, offsetY: 200, rotation, scaleX: flipped ? -1 : 1 });
+      const segments = pageBorderSegments(300, 400, { width: 8, color: '#123456' }, ['right']);
+      for (const { edge, ...config } of segments) group.add(new Konva.Line({ ...config, name: edge }));
+      assert.equal(group.getChildren().length, 3);
+      assert.equal(group.findOne('.right'), undefined);
+      const top = group.findOne('.top');
+      const transform = top.getAbsoluteTransform();
+      const start = transform.point({ x: 0, y: 4 });
+      const end = transform.point({ x: 300, y: 4 });
+      assert.ok(Math.abs(Math.hypot(end.x - start.x, end.y - start.y) - 300) < 1e-10);
+      // The page-local left outer edge and top edge still meet after imposition.
+      const left = group.findOne('.left');
+      assert.deepEqual(top.getAbsoluteTransform().point({ x: 4, y: 4 }), left.getAbsoluteTransform().point({ x: 4, y: 4 }));
+      group.destroy();
+    }
+  }
 });

@@ -110,7 +110,7 @@
             </template>
 
             <!-- Page border stays above page content and inside the printable edge. -->
-            <v-rect v-if="resolvedPageBorder.width > 0" :config="pageBorderConfig" />
+            <v-line v-for="segment in pageBorderConfigs" :key="segment.id" :config="segment" />
 
             <!-- Linked halves remain selectable without draggable transform handles. -->
             <v-rect v-for="node in selectedSpreadNodes" :key="`spread-selection-${node.id}`"
@@ -186,7 +186,7 @@ import { useUIStore } from '@/stores/ui';
 import { getDraggedAssetId, hasDraggedAsset } from '@/utils/imageDrag';
 import { toKonvaImageCrop } from '@/utils/imageCrop';
 import { isSpreadImage } from '@/utils/imageSpread';
-import { pageBorderRect, resolvePageBorder } from '@/utils/pageBorder';
+import { pageBorderSegments, resolvePageBorder, suppressedSpreadBorderEdges } from '@/utils/pageBorder';
 
 const projectStore = useProjectStore();
 const toolsStore = useToolsStore();
@@ -250,21 +250,16 @@ const resolvedPageBorder = computed(() => {
   return project && page ? resolvePageBorder(project, page) : { width: 0, color: '#000000' };
 });
 
-const pageBorderConfig = computed(() => {
+const pageBorderConfigs = computed(() => {
+  const project = projectStore.currentProject;
+  const page = projectStore.currentPage;
+  if (!project || !page) return [];
   const background = pageBackgroundConfig.value;
   const border = resolvedPageBorder.value;
-  const rect = pageBorderRect(background.width, background.height, border);
-  return {
-    id: 'page-border',
-    x: background.x + rect.x,
-    y: background.y + rect.y,
-    width: rect.width,
-    height: rect.height,
-    fill: 'transparent',
-    stroke: border.color,
-    strokeWidth: rect.strokeWidth,
-    listening: false,
-  };
+  return pageBorderSegments(background.width, background.height, border, suppressedSpreadBorderEdges(project, page))
+    .map(({ edge, ...config }) => ({
+      ...config, id: `page-border-${edge}`, x: background.x, y: background.y,
+    }));
 });
 
 // A second border drawn on top of content when something overflows the page,
