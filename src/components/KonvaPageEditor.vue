@@ -179,6 +179,7 @@ import Konva from 'konva';
 import AppToolbar from './AppToolbar.vue';
 import { useUIStore } from '@/stores/ui';
 import { getDraggedAssetId, hasDraggedAsset } from '@/utils/imageDrag';
+import { toKonvaImageCrop } from '@/utils/imageCrop';
 import { pageBorderRect, resolvePageBorder } from '@/utils/pageBorder';
 
 const projectStore = useProjectStore();
@@ -367,6 +368,7 @@ watch(() => projectStore.currentPage?.content, async (content) => {
         config: {
           ...common,
           image: imageObj,
+          crop: toKonvaImageCrop(p.crop, imageObj.naturalWidth, imageObj.naturalHeight),
           opacity: p.opacity,
           visible: isVisible,
           draggable: toolsStore.activeTool === 'select' && isSelected && !isLocked,

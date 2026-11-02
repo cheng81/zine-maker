@@ -2,6 +2,7 @@ import Konva from 'konva';
 import jsPDF from 'jspdf';
 import type { ZineProject, ZineContent, ZineTemplate, ShapeProperties, TextProperties, ImageProperties } from '@/types';
 import { pageBorderRect, resolvePageBorder } from '@/utils/pageBorder';
+import { toKonvaImageCrop } from '@/utils/imageCrop';
 
 export interface ExportOptions {
   showPageNumbers?: boolean;
@@ -287,7 +288,12 @@ export async function createKonvaNode(content: ZineContent, getAsset: GetAssetFn
       let objectUrl: string | null = null;
       imageObj.onload = () => {
         if (objectUrl) URL.revokeObjectURL(objectUrl);
-        resolve(new Konva.Image({ ...common, image: imageObj, opacity: p.opacity }));
+        resolve(new Konva.Image({
+          ...common,
+          image: imageObj,
+          opacity: p.opacity,
+          crop: toKonvaImageCrop(p.crop, imageObj.naturalWidth, imageObj.naturalHeight),
+        }));
       };
       imageObj.onerror = () => {
         if (objectUrl) URL.revokeObjectURL(objectUrl);

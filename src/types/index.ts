@@ -81,6 +81,14 @@ export interface TextProperties {
   padding: number;
 }
 
+/** Source-image rectangle in normalized coordinates, independent of output DPI. */
+export interface NormalizedImageCrop {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 export interface ImageProperties {
   src: string;
   alt: string;
@@ -90,6 +98,7 @@ export interface ImageProperties {
   lockAspectRatio?: boolean;
   originalWidth?: number;
   originalHeight?: number;
+  crop?: NormalizedImageCrop;
 }
 
 export interface ShapeProperties {
