@@ -36,6 +36,11 @@ export interface PagePosition {
   side?: 'front' | 'back';
 }
 
+export interface PageBorder {
+  width: number;
+  color: string;
+}
+
 export interface ZinePage {
   id: string;
   pageNumber: number;
@@ -43,6 +48,7 @@ export interface ZinePage {
   content: ZineContent[];
   backgroundColor: string;
   backgroundImage?: string;
+  border?: PageBorder;
 }
 
 export interface ZineContent {
@@ -75,12 +81,26 @@ export interface TextProperties {
   padding: number;
 }
 
+/** Source-image rectangle in normalized coordinates, independent of output DPI. */
+export interface NormalizedImageCrop {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 export interface ImageProperties {
   src: string;
   alt: string;
   opacity: number;
   filters?: string;
   assetId?: number;
+  lockAspectRatio?: boolean;
+  originalWidth?: number;
+  originalHeight?: number;
+  crop?: NormalizedImageCrop;
+  spreadId?: string;
+  spreadSide?: 'left' | 'right';
 }
 
 export interface ShapeProperties {
@@ -120,7 +140,9 @@ export interface ZineProject {
     description: string;
     tags: string[];
   };
-  formatVersion?: number; // 2 = new cover layout, undefined/1 = legacy
+  pageBorder?: PageBorder;
+  assetIds?: number[];
+  formatVersion?: number; // 3 = project image catalog, 2 = corrected cover layout
 }
 
 export interface ExportOptions {

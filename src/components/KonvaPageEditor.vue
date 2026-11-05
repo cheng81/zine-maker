@@ -2,7 +2,7 @@
   <div class="konva-page-editor">
     <AppToolbar />
 
-    <div class="stage-wrapper" ref="stageWrapper">
+    <div class="stage-wrapper" ref="stageWrapper" @dragover="onAssetDragOver" @drop="onAssetDrop">
       <div class="canvas-container resizable" ref="canvasContainer">
         <v-stage
           ref="stageRef"
@@ -109,6 +109,14 @@
               />
             </template>
 
+            <!-- Page border stays above page content and inside the printable edge. -->
+            <v-line v-for="segment in pageBorderConfigs" :key="segment.id" :config="segment" />
+
+            <!-- Linked halves remain selectable without draggable transform handles. -->
+            <v-rect v-for="node in selectedSpreadNodes" :key="`spread-selection-${node.id}`"
+              :config="{ x: node.config.x, y: node.config.y, width: node.config.width, height: node.config.height, stroke: '#2563eb', strokeWidth: 1, listening: false }"
+            />
+
             <!-- Selection overlay to keep group/multi selection when clicking inside bounds -->
             <v-rect
               v-if="hasSelection && selectionBounds"
@@ -175,6 +183,10 @@ import type { TextProperties, ImageProperties, ShapeProperties } from '@/types';
 import Konva from 'konva';
 import AppToolbar from './AppToolbar.vue';
 import { useUIStore } from '@/stores/ui';
+import { getDraggedAssetId, hasDraggedAsset } from '@/utils/imageDrag';
+import { toKonvaImageCrop } from '@/utils/imageCrop';
+import { isSpreadImage } from '@/utils/imageSpread';
+import { pageBorderSegments, resolvePageBorder, suppressedSpreadBorderEdges } from '@/utils/pageBorder';
 
 const projectStore = useProjectStore();
 const toolsStore = useToolsStore();
@@ -232,6 +244,24 @@ const pageBackgroundConfig = computed(() => {
   };
 });
 
+const resolvedPageBorder = computed(() => {
+  const project = projectStore.currentProject;
+  const page = projectStore.currentPage;
+  return project && page ? resolvePageBorder(project, page) : { width: 0, color: '#000000' };
+});
+
+const pageBorderConfigs = computed(() => {
+  const project = projectStore.currentProject;
+  const page = projectStore.currentPage;
+  if (!project || !page) return [];
+  const background = pageBackgroundConfig.value;
+  const border = resolvedPageBorder.value;
+  return pageBorderSegments(background.width, background.height, border, suppressedSpreadBorderEdges(project, page))
+    .map(({ edge, ...config }) => ({
+      ...config, id: `page-border-${edge}`, x: background.x, y: background.y,
+    }));
+});
+
 // A second border drawn on top of content when something overflows the page,
 // so the boundary stays visible even when content is layered above it.
 const pageBoundaryHighlightConfig = computed(() => {
@@ -250,6 +280,9 @@ const pageBoundaryHighlightConfig = computed(() => {
 
 // Build Konva configs from current page content
 const pageNodes = shallowRef<any[]>([]);
+const selectedSpreadNodes = computed(() => pageNodes.value.filter(node =>
+  selectedIds.value.includes(node.id) && isSpreadImage(projectStore.getContentById(node.id))
+));
 
 watch(() => projectStore.currentPage?.content, async (content) => {
   if (!content) {
@@ -326,10 +359,11 @@ watch(() => projectStore.currentPage?.content, async (content) => {
       if (p.assetId) {
         const file = await assetStore.getAsset(p.assetId);
         if (file) {
-          imageObj.src = URL.createObjectURL(file);
+          const objectUrl = URL.createObjectURL(file);
+          await loadImage(imageObj, objectUrl, () => URL.revokeObjectURL(objectUrl)).catch(() => undefined);
         }
       } else {
-        imageObj.src = p.src;
+        await loadImage(imageObj, p.src).catch(() => undefined);
       }
 
       return {
@@ -338,9 +372,10 @@ watch(() => projectStore.currentPage?.content, async (content) => {
         config: {
           ...common,
           image: imageObj,
+          crop: toKonvaImageCrop(p.crop, imageObj.naturalWidth, imageObj.naturalHeight),
           opacity: p.opacity,
           visible: isVisible,
-          draggable: toolsStore.activeTool === 'select' && isSelected && !isLocked,
+          draggable: toolsStore.activeTool === 'select' && isSelected && !isLocked && !p.spreadId,
           listening: !isLocked
         }
       };
@@ -406,6 +441,7 @@ function attachTransformer() {
 
     const nodesToAttach: Konva.Node[] = [];
     selectedIds.value.forEach((id) => {
+      if (isSpreadImage(projectStore.getContentById(id))) return;
       const node = stage.findOne(`#${id}`);
       if (node) {
         nodesToAttach.push(node as Konva.Node);
@@ -771,6 +807,7 @@ onMounted(() => {
         height = height * scaleY;
         node.scale({ x: 1, y: 1 });
       }
+      ({ width, height } = constrainImageSize(id, width, height));
       const pos = node.position();
       projectStore.updateContent(id, { x: pos.x - pageBackgroundConfig.value.x, y: pos.y - pageBackgroundConfig.value.y, width, height, rotation });
     });
@@ -801,6 +838,7 @@ watch(
           height = height * scaleY;
           node.scale({ x: 1, y: 1 });
         }
+        ({ width, height } = constrainImageSize(id, width, height));
         const pos = node.position();
         projectStore.updateContent(id, { x: pos.x - pageBackgroundConfig.value.x, y: pos.y - pageBackgroundConfig.value.y, width, height, rotation });
       });
@@ -811,10 +849,37 @@ watch(
   { immediate: true }
 );
 
-const transformerConfig = { 
-  rotateAnchorOffset: 20, 
-  enabledAnchors: ['top-left', 'top-right', 'bottom-left', 'bottom-right', 'middle-left', 'middle-right', 'top-center', 'bottom-center'] 
-};
+const transformerConfig = computed(() => {
+  const allAnchors = ['top-left', 'top-right', 'bottom-left', 'bottom-right', 'middle-left', 'middle-right', 'top-center', 'bottom-center'];
+  const content = selectedIds.value.length === 1
+    ? projectStore.getContentById(selectedIds.value[0])
+    : null;
+  if (content?.type !== 'image') {
+    return { rotateAnchorOffset: 20, enabledAnchors: allAnchors };
+  }
+
+  const locked = Boolean((content.properties as ImageProperties).lockAspectRatio);
+  return {
+    rotateAnchorOffset: 20,
+    keepRatio: locked,
+    enabledAnchors: locked
+      ? ['top-left', 'top-right', 'bottom-left', 'bottom-right']
+      : allAnchors,
+  };
+});
+
+function constrainImageSize(id: string, width: number, height: number) {
+  const content = projectStore.getContentById(id);
+  if (content?.type !== 'image') return { width, height };
+  const properties = content.properties as ImageProperties;
+  if (!properties.lockAspectRatio || !properties.originalWidth || !properties.originalHeight) {
+    return { width, height };
+  }
+  return {
+    width,
+    height: Math.max(1, Math.round(width * properties.originalHeight / properties.originalWidth * 100) / 100),
+  };
+}
 
 const isSelecting = ref(false);
 const selectionStart = ref({ x: 0, y: 0 });
@@ -1035,10 +1100,10 @@ function onStageMouseMove() {
       const dy = p.y - pointerDownPos.y;
       if (Math.hypot(dx, dy) > DRAG_THRESHOLD) {
         const tr = transformerRef.value?.getNode?.();
-        if (tr && tr.nodes().length > 0) {
+        const stageTarget = (stage as any)._pointerdownTarget as Konva.Node | undefined;
+        if (tr && tr.nodes().length > 0 && !isSpreadImage(projectStore.getContentById(stageTarget?.id() || ''))) {
           // enable dragging for selected nodes and begin dragging the primary target
           tr.nodes().forEach((n: any) => n.draggable(true));
-          const stageTarget = (stage as any)._pointerdownTarget as Konva.Node | undefined;
           const primary = stageTarget && tr.nodes().some((n: Konva.Node) => n.id() === stageTarget.id())
             ? stageTarget
             : tr.nodes()[0];
@@ -1411,6 +1476,49 @@ function onStageClick(e: any) {
   } else if (toolsStore.activeTool === 'shape') {
     addShape(relativePos.x, relativePos.y);
   }
+}
+
+function loadImage(image: HTMLImageElement, src: string, cleanup?: () => void): Promise<void> {
+  return new Promise((resolve, reject) => {
+    image.onload = () => {
+      cleanup?.();
+      resolve();
+    };
+    image.onerror = () => {
+      cleanup?.();
+      reject(new Error('Image could not be loaded'));
+    };
+    image.src = src;
+  });
+}
+
+function onAssetDragOver(event: DragEvent) {
+  if (!hasDraggedAsset(event)) return;
+  event.preventDefault();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
+}
+
+async function onAssetDrop(event: DragEvent) {
+  const assetId = getDraggedAssetId(event);
+  if (assetId == null || !projectStore.currentPage) return;
+  event.preventDefault();
+
+  const stage = stageRef.value?.getNode?.() as Konva.Stage | undefined;
+  if (!stage) return;
+  stage.setPointersPositions(event);
+  const pointer = stage.getPointerPosition();
+  if (!pointer) return;
+  const stagePoint = toStagePoint(stage, pointer);
+  const page = pageBackgroundConfig.value;
+  const center = { x: stagePoint.x - page.x, y: stagePoint.y - page.y };
+  if (center.x < 0 || center.y < 0 || center.x > page.width || center.y > page.height) return;
+
+  const asset = await assetStore.getAssetRecord(assetId);
+  if (!asset) return;
+  const contentId = projectStore.addImageAssetToPage(projectStore.currentPage.id, asset, center);
+  if (!contentId) return;
+  projectStore.selectContent(contentId);
+  toolsStore.setActiveTool('select');
 }
 
 function addText(x: number, y: number) {

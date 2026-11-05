@@ -1,8 +1,13 @@
 import { defineStore } from 'pinia';
 import { ref, computed, watch, toRaw } from 'vue';
-import type { ZineProject, ZinePage, ZineContent, ZineTemplate, ExportOptions } from '@/types';
+import type { ZineProject, ZinePage, ZineContent, ZineTemplate, ExportOptions, PageBorder, ImageProperties } from '@/types';
 import { saveProject } from '@/utils/persistence';
 import { debounce } from 'lodash-es';
+import type { ImageAssetRecord } from '@/stores/assetStore';
+import { getAssetUsageCount, migrateProjectAssetCatalog } from '@/utils/projectAssets';
+import { normalizePageBorder } from '@/utils/pageBorder';
+import { createSpreadCrops, findSpreadMembers, getSpreadPageSize, getValidSpread, isSpreadImage, pageHasSpread, positionSpreadCrop, unlinkInvalidSpreads } from '@/utils/imageSpread';
+import { isValidImageCrop } from '@/utils/imageCrop';
 
 export const useProjectStore = defineStore('project', () => {
   const currentProject = ref<ZineProject | null>(null);
@@ -129,7 +134,9 @@ export const useProjectStore = defineStore('project', () => {
         description: '',
         tags: []
       },
-      formatVersion: 2 // New projects use corrected cover layout
+      pageBorder: normalizePageBorder(),
+      assetIds: [],
+      formatVersion: 3
     };
 
     currentPageIndex.value = 0;
@@ -143,6 +150,7 @@ export const useProjectStore = defineStore('project', () => {
     // Ensure dates are correctly revived from JSON serialization
     project.createdAt = new Date(project.createdAt);
     project.modifiedAt = new Date(project.modifiedAt);
+    migrateProjectAssetCatalog(project);
 
     // The migration now happens in persistence.ts when loading
     // This ensures it's saved immediately to database
@@ -161,19 +169,19 @@ export const useProjectStore = defineStore('project', () => {
     }
   }
 
-  function addContentToCurrentPage(content: Omit<ZineContent, 'id'>): void {
-    if (!currentPage.value) return;
+  function addContentToPage(pageId: string, content: Omit<ZineContent, 'id'>): string | null {
+    const page = getPageById(pageId);
+    if (!page) return null;
 
     const newContent: ZineContent = {
       ...content,
       id: `content-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
     };
 
-    currentPage.value.content.push(newContent);
+    page.content.push(newContent);
     isModified.value = true;
 
     const snapshot = JSON.parse(JSON.stringify(newContent)) as ZineContent;
-    const pageId = currentPage.value.id;
     pushHistory({
       name: 'addContent',
       undo: () => {
@@ -190,6 +198,213 @@ export const useProjectStore = defineStore('project', () => {
         }
       }
     });
+    return newContent.id;
+  }
+
+  function addContentToCurrentPage(content: Omit<ZineContent, 'id'>): string | null {
+    if (!currentPage.value) return null;
+    return addContentToPage(currentPage.value.id, content);
+  }
+
+  function addImageAssetToPage(
+    pageId: string,
+    asset: ImageAssetRecord,
+    center?: { x: number; y: number }
+  ): string | null {
+    if (!currentProject.value) return null;
+    if (!(currentProject.value.assetIds || []).includes(asset.id)) addAssetsToCatalog([asset.id]);
+    const pageSize = currentProject.value.template.pageCanvas
+      || currentProject.value.template.printLayout.pagePositions[0];
+    if (!pageSize) return null;
+
+    const maxWidth = pageSize.width * 0.6;
+    const maxHeight = pageSize.height * 0.6;
+    const scale = Math.min(1, maxWidth / asset.width, maxHeight / asset.height);
+    const width = Math.max(1, Math.round(asset.width * scale));
+    const height = Math.max(1, Math.round(asset.height * scale));
+    const targetCenter = center || { x: pageSize.width / 2, y: pageSize.height / 2 };
+    const x = Math.max(0, Math.min(pageSize.width - width, targetCenter.x - width / 2));
+    const y = Math.max(0, Math.min(pageSize.height - height, targetCenter.y - height / 2));
+
+    return addContentToPage(pageId, {
+      type: 'image',
+      x,
+      y,
+      width,
+      height,
+      rotation: 0,
+      zIndex: Date.now(),
+      properties: {
+        src: '',
+        alt: asset.name,
+        opacity: 1,
+        assetId: asset.id,
+        lockAspectRatio: false,
+        originalWidth: asset.width,
+        originalHeight: asset.height,
+      },
+    });
+  }
+
+  function createImageSpread(pageId: string, contentId: string, partnerPageId: string, sourceDimensions?: { width: number; height: number }): string | null {
+    const project = currentProject.value;
+    const page = getPageById(pageId);
+    const partner = getPageById(partnerPageId);
+    const source = page?.content.find(content => content.id === contentId && content.type === 'image');
+    if (!project || !page || !partner || !source
+      || Math.abs(project.pages.indexOf(page) - project.pages.indexOf(partner)) !== 1
+      || pageHasSpread(page) || pageHasSpread(partner)) return null;
+    const size = getSpreadPageSize(project, page);
+    const partnerSize = getSpreadPageSize(project, partner);
+    if (!size || !partnerSize || size.width !== partnerSize.width || size.height !== partnerSize.height) return null;
+    const properties = source.properties as ImageProperties;
+    // Source dimensions must come from the asset, never the element's transformed size.
+    const sourceWidth = sourceDimensions?.width ?? properties.originalWidth;
+    const sourceHeight = sourceDimensions?.height ?? properties.originalHeight;
+    const crops = createSpreadCrops(sourceWidth!, sourceHeight!, size.width, size.height);
+    if (!crops || (!properties.src && properties.assetId === undefined)) return null;
+
+    const spreadId = `spread-${crypto.randomUUID()}`;
+    const partnerId = `content-${crypto.randomUUID()}`;
+    const sourceSide = project.pages.indexOf(page) < project.pages.indexOf(partner) ? 'left' : 'right';
+    const makeHalf = (id: string, side: 'left' | 'right'): ZineContent => {
+      const half = JSON.parse(JSON.stringify(source)) as ZineContent;
+      Object.assign(half, { id, x: 0, y: 0, width: size.width, height: size.height, rotation: 0 });
+      delete half.groupId;
+      half.properties = { ...half.properties, originalWidth: sourceWidth, originalHeight: sourceHeight, crop: crops[side], spreadId, spreadSide: side, lockAspectRatio: false };
+      return half;
+    };
+    const before = [page, partner].map(p => ({ pageId: p.id, content: JSON.parse(JSON.stringify(p.content)) as ZineContent[] }));
+    page.content.splice(page.content.indexOf(source), 1, makeHalf(source.id, sourceSide));
+    partner.content.push(makeHalf(partnerId, sourceSide === 'left' ? 'right' : 'left'));
+    partner.content.sort((a, b) => a.zIndex - b.zIndex);
+    recordSpreadChange('createImageSpread', before);
+    return spreadId;
+  }
+
+  function recordSpreadChange(name: string, before: { pageId: string; content: ZineContent[] }[]): void {
+    const after = before.map(({ pageId }) => ({ pageId, content: JSON.parse(JSON.stringify(getPageById(pageId)!.content)) as ZineContent[] }));
+    const apply = (snapshot: typeof before) => snapshot.forEach(({ pageId, content }) => {
+      const page = getPageById(pageId);
+      if (page) page.content = JSON.parse(JSON.stringify(content));
+    });
+    pushHistory({ name, undo: () => apply(before), redo: () => apply(after) });
+  }
+
+  function removeImageSpread(spreadId: string): boolean {
+    if (!currentProject.value) return false;
+    const members = findSpreadMembers(currentProject.value, spreadId);
+    if (!members.length) return false;
+    const pages = [...new Set(members.map(member => member.page))];
+    const before = pages.map(page => ({ pageId: page.id, content: JSON.parse(JSON.stringify(page.content)) as ZineContent[] }));
+    const ids = new Set(members.map(member => member.content.id));
+    pages.forEach(page => { page.content = page.content.filter(content => !ids.has(content.id)); });
+    selectedContentIds.value = selectedContentIds.value.filter(id => !ids.has(id));
+    recordSpreadChange('removeImageSpread', before);
+    return true;
+  }
+
+  function unlinkImageSpread(spreadId: string): boolean {
+    if (!currentProject.value) return false;
+    const members = findSpreadMembers(currentProject.value, spreadId);
+    if (!members.length) return false;
+    const before = [...new Set(members.map(member => member.page))].map(page => ({
+      pageId: page.id, content: JSON.parse(JSON.stringify(page.content)) as ZineContent[],
+    }));
+    members.forEach(({ properties }) => {
+      delete properties.spreadId;
+      delete properties.spreadSide;
+    });
+    recordSpreadChange('unlinkImageSpread', before);
+    return true;
+  }
+
+  function updateSpreadContent(content: ZineContent, updates: Partial<ZineContent>): void {
+    const project = currentProject.value;
+    const previous = content.properties as ImageProperties;
+    if (!project || !previous.spreadId) return;
+    const pair = getValidSpread(project, previous.spreadId);
+    if (!pair) return;
+    const incoming = updates.properties as Partial<ImageProperties> | undefined;
+    const shared = { ...previous, ...incoming };
+    const replaced = shared.src !== previous.src || shared.assetId !== previous.assetId
+      || shared.originalWidth !== previous.originalWidth || shared.originalHeight !== previous.originalHeight;
+    let leftCrop = pair.left.properties.crop!;
+    let rightCrop = pair.right.properties.crop!;
+    if (replaced) {
+      // A replacement must supply its own intrinsic dimensions.
+      if (!incoming?.originalWidth || !incoming.originalHeight || (!shared.src && shared.assetId === undefined)) return;
+      const crops = createSpreadCrops(shared.originalWidth!, shared.originalHeight!, content.width, content.height);
+      if (!crops) return;
+      leftCrop = crops.left;
+      rightCrop = crops.right;
+    } else if (incoming && 'crop' in incoming && JSON.stringify(incoming.crop) !== JSON.stringify(previous.crop)) {
+      const crop = incoming.crop;
+      if (!isValidImageCrop(crop)) return;
+      const x = previous.spreadSide === 'right' ? crop.x - crop.width : crop.x;
+      const combined = { ...crop, x, width: crop.width * 2 };
+      if (!isValidImageCrop(combined)) return;
+      const ratio = combined.width * shared.originalWidth! / (combined.height * shared.originalHeight!);
+      if (!Number.isFinite(ratio) || Math.abs(ratio / (content.width * 2 / content.height) - 1) > 1e-8) return;
+      leftCrop = { ...crop, x };
+      rightCrop = { ...crop, x: x + crop.width };
+    }
+    const members = [pair.left, pair.right];
+    const before = members.map(({ page }) => ({ pageId: page.id, content: JSON.parse(JSON.stringify(page.content)) as ZineContent[] }));
+    for (const member of members) {
+      for (const key of ['src', 'assetId', 'alt', 'opacity', 'filters', 'originalWidth', 'originalHeight'] as const) {
+        Object.assign(member.properties, { [key]: shared[key] });
+      }
+      member.properties.crop = member === pair.left ? leftCrop : rightCrop;
+      member.properties.lockAspectRatio = false;
+      if (updates.visible !== undefined) member.content.visible = updates.visible;
+    }
+    // Geometry, identity, and spread metadata cannot be edited independently.
+    for (const key of ['zIndex', 'name', 'locked'] as const) {
+      if (key in updates) Object.assign(content, { [key]: updates[key] });
+    }
+    if (JSON.stringify(before.map(item => item.content)) === JSON.stringify(members.map(({ page }) => page.content))) return;
+    members.forEach(({ page }) => page.content.sort((a, b) => a.zIndex - b.zIndex));
+    recordSpreadChange('updateImageSpread', before);
+  }
+
+  function resetImage(contentId: string): void {
+    const content = getContentById(contentId);
+    if (content?.type !== 'image') return;
+    const properties = content.properties as ImageProperties;
+    const crop = properties.spreadId
+      ? createSpreadCrops(properties.originalWidth!, properties.originalHeight!, content.width, content.height)
+      : null;
+    updateContent(contentId, { properties: {
+      ...properties, opacity: 1, filters: undefined,
+      ...(crop ? { crop: crop[properties.spreadSide!] } : {}),
+    } });
+  }
+
+  function setImageSpreadFocalPosition(spreadId: string, focal: { x: number; y: number }): void {
+    if (!currentProject.value) return;
+    const pair = getValidSpread(currentProject.value, spreadId);
+    if (!pair) return;
+    const crop = positionSpreadCrop(pair.left.properties.crop!, focal);
+    if (crop) updateSpreadContent(pair.left.content, { properties: { ...pair.left.properties, crop } });
+  }
+
+  function addAssetsToCatalog(assetIds: number[]): void {
+    if (!currentProject.value || assetIds.length === 0) return;
+    currentProject.value.assetIds = [...new Set([
+      ...(currentProject.value.assetIds || []),
+      ...assetIds,
+    ])];
+    currentProject.value.modifiedAt = new Date();
+    isModified.value = true;
+  }
+
+  function removeAssetFromCatalog(assetId: number): boolean {
+    if (!currentProject.value || getAssetUsageCount(currentProject.value, assetId) > 0) return false;
+    currentProject.value.assetIds = (currentProject.value.assetIds || []).filter(id => id !== assetId);
+    currentProject.value.modifiedAt = new Date();
+    isModified.value = true;
+    return true;
   }
 
   function updateContent(contentId: string, updates: Partial<ZineContent>): void {
@@ -198,6 +413,10 @@ export const useProjectStore = defineStore('project', () => {
     const contentIndex = currentPage.value.content.findIndex(c => c.id === contentId);
     if (contentIndex !== -1) {
       const existing = currentPage.value.content[contentIndex];
+      if (isSpreadImage(existing)) {
+        updateSpreadContent(existing, updates);
+        return;
+      }
       const prev = JSON.parse(JSON.stringify(existing)) as ZineContent;
       const next = { ...existing, ...updates } as ZineContent;
       // Maintain z-order by sorting on zIndex after update
@@ -235,6 +454,10 @@ export const useProjectStore = defineStore('project', () => {
     const contentIndex = currentPage.value.content.findIndex(c => c.id === contentId);
     if (contentIndex !== -1) {
       const removed = currentPage.value.content[contentIndex];
+      if (isSpreadImage(removed)) {
+        removeImageSpread((removed.properties as ImageProperties).spreadId!);
+        return;
+      }
       const removedSnapshot = JSON.parse(JSON.stringify(removed)) as ZineContent;
       currentPage.value.content.splice(contentIndex, 1);
       selectedContentIds.value = selectedContentIds.value.filter(id => id !== contentId);
@@ -478,6 +701,55 @@ export const useProjectStore = defineStore('project', () => {
     });
   }
 
+  function updateProjectPageBorder(border: PageBorder): void {
+    if (!currentProject.value) return;
+    const project = currentProject.value;
+    const previous = project.pageBorder ? { ...project.pageBorder } : undefined;
+    const next = normalizePageBorder(border);
+    project.pageBorder = next;
+    project.modifiedAt = new Date();
+    isModified.value = true;
+
+    pushHistory({
+      name: 'updateProjectPageBorder',
+      undo: () => {
+        if (!currentProject.value) return;
+        if (previous) currentProject.value.pageBorder = { ...previous };
+        else delete currentProject.value.pageBorder;
+      },
+      redo: () => {
+        if (!currentProject.value) return;
+        currentProject.value.pageBorder = { ...next };
+      }
+    });
+  }
+
+  function updateCurrentPageBorder(border?: PageBorder): void {
+    if (!currentPage.value) return;
+    const pageId = currentPage.value.id;
+    const previous = currentPage.value.border ? { ...currentPage.value.border } : undefined;
+    const next = border ? normalizePageBorder(border) : undefined;
+    if (next) currentPage.value.border = next;
+    else delete currentPage.value.border;
+    isModified.value = true;
+
+    pushHistory({
+      name: 'updatePageBorder',
+      undo: () => {
+        const page = getPageById(pageId);
+        if (!page) return;
+        if (previous) page.border = { ...previous };
+        else delete page.border;
+      },
+      redo: () => {
+        const page = getPageById(pageId);
+        if (!page) return;
+        if (next) page.border = { ...next };
+        else delete page.border;
+      }
+    });
+  }
+
   function updateProjectMetadata(metadata: Partial<ZineProject['metadata']>): void {
     if (!currentProject.value) return;
     const prev = JSON.parse(JSON.stringify(currentProject.value.metadata));
@@ -532,9 +804,15 @@ export const useProjectStore = defineStore('project', () => {
 
     const duplicated = {
       ...content,
+      properties: JSON.parse(JSON.stringify(content.properties)),
       x: content.x + 20,
       y: content.y + 20
     };
+    // A duplicate is an independent cropped image on the current page.
+    if (content.type === 'image') {
+      delete duplicated.properties.spreadId;
+      delete duplicated.properties.spreadSide;
+    }
     delete (duplicated as any).id; // Remove id so addContentToCurrentPage creates a new one
     addContentToCurrentPage(duplicated);
   }
@@ -558,6 +836,8 @@ export const useProjectStore = defineStore('project', () => {
     const [moved] = pages.splice(fromIndex, 1);
     pages.splice(toIndex, 0, moved);
     pages.forEach((p, i) => { p.pageNumber = i + 1; });
+    unlinkInvalidSpreads(currentProject.value);
+    const nextPages = JSON.parse(JSON.stringify(pages)) as ZinePage[];
 
     // Follow the currently-viewed page
     if (currentPageIndex.value === fromIndex) {
@@ -575,19 +855,12 @@ export const useProjectStore = defineStore('project', () => {
       name: 'reorderPages',
       undo: () => {
         if (!currentProject.value) return;
-        currentProject.value.pages = prevPages.map(p => {
-          const existing = currentProject.value!.pages.find(ep => ep.id === p.id);
-          return existing ? Object.assign(existing, p) : p;
-        });
         currentProject.value.pages = JSON.parse(JSON.stringify(prevPages));
         currentPageIndex.value = prevPageIndex;
       },
       redo: () => {
         if (!currentProject.value) return;
-        const pages = currentProject.value.pages;
-        const [moved] = pages.splice(fromIndex, 1);
-        pages.splice(toIndex, 0, moved);
-        pages.forEach((p, i) => { p.pageNumber = i + 1; });
+        currentProject.value.pages = JSON.parse(JSON.stringify(nextPages));
         currentPageIndex.value = newPageIndex;
       }
     });
@@ -619,7 +892,16 @@ export const useProjectStore = defineStore('project', () => {
     createNewProject,
     loadProject,
     setCurrentPage,
+    addContentToPage,
     addContentToCurrentPage,
+    addImageAssetToPage,
+    createImageSpread,
+    removeImageSpread,
+    unlinkImageSpread,
+    resetImage,
+    setImageSpreadFocalPosition,
+    addAssetsToCatalog,
+    removeAssetFromCatalog,
     updateContent,
     deleteContent,
     setContentVisibility,
@@ -630,6 +912,8 @@ export const useProjectStore = defineStore('project', () => {
     selectContent,
     clearSelection,
     updatePageBackground,
+    updateProjectPageBorder,
+    updateCurrentPageBorder,
     updateProjectMetadata,
     updateProjectName,
     manualSave,

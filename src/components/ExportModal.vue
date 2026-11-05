@@ -25,6 +25,10 @@
         </button>
       </div>
 
+      <div class="export-details">
+        {{ uiStore.exportDpi }} DPI · {{ uiStore.exportImageWidth }} × {{ uiStore.exportImageHeight }} px
+      </div>
+
       <div class="preview-container">
         <div v-if="activeTab === 'png' && currentPng" class="png-wrapper">
           <div class="page-label" v-if="uiStore.exportImages.length >= 1">{{ sideLabel }}</div>
@@ -178,6 +182,13 @@ function downloadPdf() {
   gap: 0.5rem;
   margin-bottom: 1rem;
   border-bottom: 1px solid #e5e7eb;
+}
+
+.export-details {
+  margin: -0.5rem 0 0.75rem;
+  color: var(--ui-ink);
+  font-size: 0.8rem;
+  text-align: center;
 }
 
 .tab-button {

@@ -6,7 +6,8 @@
         <label>Source</label>
         <div class="image-source">
           <div class="image-preview">
-            <img :src="imageProps.src" :alt="imageProps.alt" />
+            <img v-if="previewSrc" :src="previewSrc" :alt="imageProps.alt" />
+            <ImageOff v-else :size="22" />
           </div>
           <div class="image-info">
             <input 
@@ -16,10 +17,19 @@
               ref="fileInput"
               class="hidden-input"
             />
-            <button @click="selectNewImage" class="change-button">
-              Change Image
+            <button @click="selectNewImage" class="change-button" :disabled="changingImage">
+              {{ changingImage ? 'Loading...' : 'Change Image' }}
             </button>
           </div>
+        </div>
+        <p v-if="imageError" class="image-error" role="alert">{{ imageError }}</p>
+        <div v-if="sourceDimensions" class="resolution-details">
+          <span>Source: {{ sourceDimensions.width }} × {{ sourceDimensions.height }} px</span>
+          <span v-if="effectivePpi">Effective: {{ effectivePpi }} PPI</span>
+        </div>
+        <div v-if="resolutionWarning" class="resolution-warning" role="status">
+          <TriangleAlert :size="16" />
+          <span>{{ resolutionWarning }}</span>
         </div>
       </div>
 
@@ -34,6 +44,9 @@
         />
       </div>
     </div>
+
+    <ImageSpreadProperties :content="content" :source-dimensions="sourceDimensions"
+      :source-ready="sourceReady" :source-loading="sourceLoading" />
 
     <div class="property-section">
       <h4>Appearance</h4>
@@ -74,10 +87,10 @@
       <h4>Actions</h4>
       <div class="property-group">
         <button @click="resetImage" class="action-button">
-          Reset to Original
+          {{ imageProps.spreadId ? 'Reset Spread' : 'Reset to Original' }}
         </button>
         <button @click="duplicateImage" class="action-button">
-          Duplicate Image
+          {{ imageProps.spreadId ? 'Duplicate Half as Image' : 'Duplicate Image' }}
         </button>
       </div>
     </div>
@@ -85,9 +98,13 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, onUnmounted, ref, watch } from 'vue';
 import type { ZineContent, ImageProperties } from '@/types';
 import { useProjectStore } from '@/stores/project';
+import { useAssetStore } from '@/stores/assetStore';
+import { useUIStore } from '@/stores/ui';
+import { ImageOff, TriangleAlert } from 'lucide-vue-next';
+import ImageSpreadProperties from './ImageSpreadProperties.vue';
 
 interface Props {
   content: ZineContent;
@@ -101,9 +118,43 @@ const props = defineProps<Props>();
 const emit = defineEmits<Emits>();
 
 const projectStore = useProjectStore();
+const assetStore = useAssetStore();
+const uiStore = useUIStore();
 const fileInput = ref<HTMLInputElement | null>(null);
+const previewSrc = ref('');
+const changingImage = ref(false);
+const imageError = ref('');
+const sourceDimensions = ref<{ width: number; height: number } | null>(null);
+const sourceReady = ref(false);
+const sourceLoading = ref(false);
+let previewObjectUrl: string | null = null;
+let previewRequest = 0;
 
 const imageProps = computed(() => props.content.properties as ImageProperties);
+const effectivePpi = computed(() => {
+  const dimensions = sourceDimensions.value;
+  if (!dimensions || props.content.width <= 0 || props.content.height <= 0) return null;
+  return Math.round(Math.min(
+    dimensions.width * (imageProps.value.crop?.width ?? 1) / (props.content.width / 72),
+    dimensions.height * (imageProps.value.crop?.height ?? 1) / (props.content.height / 72),
+  ));
+});
+const resolutionWarning = computed(() => {
+  const ppi = effectivePpi.value;
+  if (!ppi || ppi >= uiStore.exportDpi) return '';
+  return `This image provides about ${ppi} PPI at its current size, below the ${uiStore.exportDpi} DPI export setting.`;
+});
+
+watch(
+  () => [props.content.id, imageProps.value.assetId, imageProps.value.src] as const,
+  () => loadPreview(),
+  { immediate: true }
+);
+
+onUnmounted(() => {
+  previewRequest++;
+  revokePreviewUrl();
+});
 
 function updateProperty(key: keyof ImageProperties, value: any) {
   emit('update', props.content.id, {
@@ -121,29 +172,111 @@ function selectNewImage() {
   fileInput.value?.click();
 }
 
-function handleImageChange(event: Event) {
+async function handleImageChange(event: Event) {
   const target = event.target as HTMLInputElement;
   const file = target.files?.[0];
-  
-  if (file) {
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const src = e.target?.result as string;
-      updateProperty('src', src);
-    };
-    reader.readAsDataURL(file);
+  if (!file) return;
+
+  changingImage.value = true;
+  imageError.value = '';
+  try {
+    const result = await assetStore.addAssets([file]);
+    const asset = result.assets[0];
+    if (!asset) throw new Error(result.failures[0]?.reason || 'Image could not be loaded.');
+    projectStore.addAssetsToCatalog([asset.id]);
+    emit('update', props.content.id, {
+      ...(imageProps.value.lockAspectRatio && asset.width > 0 && asset.height > 0
+        ? { height: roundPixels(props.content.width * asset.height / asset.width) }
+        : {}),
+      properties: {
+        ...imageProps.value,
+        src: '',
+        assetId: asset.id,
+        alt: file.name,
+        originalWidth: asset.width,
+        originalHeight: asset.height,
+      }
+    });
+  } catch (error) {
+    imageError.value = error instanceof Error ? error.message : 'Image could not be changed.';
+  } finally {
+    changingImage.value = false;
+    target.value = '';
   }
 }
 
-function resetImage() {
-  // Reset filters and opacity
-  emit('update', props.content.id, {
-    properties: { 
-      ...imageProps.value, 
-      opacity: 1,
-      filters: undefined
+async function loadPreview() {
+  const request = ++previewRequest;
+  revokePreviewUrl();
+  previewSrc.value = '';
+  sourceDimensions.value = dimensionsFromProperties();
+  sourceReady.value = false;
+  sourceLoading.value = true;
+  imageError.value = '';
+
+  const assetId = imageProps.value.assetId;
+  if (typeof assetId === 'number') {
+    try {
+      const asset = await assetStore.getAssetRecord(assetId);
+      if (request !== previewRequest) return;
+      if (!asset) {
+        imageError.value = 'The source image is missing from the image catalog.';
+        return;
+      }
+      sourceDimensions.value = { width: asset.width, height: asset.height };
+      previewObjectUrl = URL.createObjectURL(asset.file);
+      previewSrc.value = previewObjectUrl;
+      sourceReady.value = true;
+    } catch {
+      if (request === previewRequest) imageError.value = 'Image preview could not be loaded.';
+    } finally {
+      if (request === previewRequest) sourceLoading.value = false;
     }
-  });
+    return;
+  }
+  if (request === previewRequest) {
+    previewSrc.value = imageProps.value.src;
+    if (imageProps.value.src) loadSourceDimensions(imageProps.value.src, request);
+    else sourceLoading.value = false;
+  }
+}
+
+function dimensionsFromProperties() {
+  const width = imageProps.value.originalWidth;
+  const height = imageProps.value.originalHeight;
+  return width && height && width > 0 && height > 0 ? { width, height } : null;
+}
+
+function loadSourceDimensions(src: string, request: number) {
+  const image = new Image();
+  image.onload = () => {
+    if (request === previewRequest && image.naturalWidth && image.naturalHeight) {
+      sourceDimensions.value = { width: image.naturalWidth, height: image.naturalHeight };
+      sourceReady.value = true;
+      sourceLoading.value = false;
+    }
+  };
+  image.onerror = () => {
+    if (request === previewRequest) {
+      imageError.value = 'The source image could not be loaded.';
+      sourceLoading.value = false;
+    }
+  };
+  image.src = src;
+}
+
+function revokePreviewUrl() {
+  if (!previewObjectUrl) return;
+  URL.revokeObjectURL(previewObjectUrl);
+  previewObjectUrl = null;
+}
+
+function roundPixels(value: number) {
+  return Math.max(1, Math.round(value * 100) / 100);
+}
+
+function resetImage() {
+  projectStore.resetImage(props.content.id);
 }
 
 function duplicateImage() {
@@ -240,6 +373,41 @@ label {
 .change-button:hover {
   background: #e5e7eb;
 }
+
+.change-button:disabled { opacity: 0.65; cursor: wait; }
+
+.image-error {
+  margin: 0.4rem 0 0;
+  color: #b91c1c;
+  font-size: 0.75rem;
+  line-height: 1.3;
+}
+
+.resolution-details {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  margin-top: 0.5rem;
+  color: #6b7280;
+  font-size: 0.75rem;
+  line-height: 1.3;
+}
+
+.resolution-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.4rem;
+  margin-top: 0.5rem;
+  padding: 0.5rem;
+  border: 1px solid #d97706;
+  border-radius: 4px;
+  background: #fffbeb;
+  color: #92400e;
+  font-size: 0.75rem;
+  line-height: 1.35;
+}
+
+.resolution-warning svg { flex: 0 0 auto; }
 
 .text-input {
   width: 100%;

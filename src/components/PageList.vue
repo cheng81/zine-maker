@@ -1,67 +1,186 @@
 <template>
   <div class="page-list" :class="{ collapsed: uiStore.pageListCollapsed }">
     <div class="page-list-header">
-      <h3>Pages</h3>
-      <span class="page-count">{{ projectStore.pageCount }} pages</span>
+      <div class="sidebar-tabs">
+        <button
+          class="sidebar-tab"
+          :class="{ active: pinnedLayout || uiStore.leftSidebarTab === 'pages' }"
+          @click="uiStore.leftSidebarTab = 'pages'"
+          @dragenter="onPagesTabDragEnter"
+          @dragleave="cancelTabSwitch"
+        >Pages</button>
+        <button
+          class="sidebar-tab"
+          :class="{ active: pinnedLayout || uiStore.leftSidebarTab === 'images' }"
+          @click="uiStore.leftSidebarTab = 'images'"
+        >Images</button>
+      </div>
+      <button
+        v-if="!isMobile"
+        class="pin-button"
+        type="button"
+        :class="{ active: uiStore.imageCatalogPinned }"
+        :title="uiStore.imageCatalogPinned ? 'Unpin image catalog' : 'Pin image catalog'"
+        :aria-label="uiStore.imageCatalogPinned ? 'Unpin image catalog' : 'Pin image catalog'"
+        :aria-pressed="uiStore.imageCatalogPinned"
+        @click="toggleImageCatalogPin"
+      >
+        <PinOff v-if="uiStore.imageCatalogPinned" :size="16" />
+        <Pin v-else :size="16" />
+      </button>
+      <span class="page-count" :title="sidebarCountTitle">
+        {{ sidebarCount }}
+      </span>
       <button class="collapse-button" @click="uiStore.togglePageListCollapsed()">
         <ChevronRight v-if="uiStore.pageListCollapsed" :size="20" />
         <ChevronDown v-else :size="20" />
       </button>
     </div>
 
-    <div class="pages-grid" ref="pagesGridRef">
-      <div 
-        v-for="(page, index) in projectStore.currentProject?.pages" 
-        :key="page.id"
-        class="page-item"
-        :class="{ active: index === projectStore.currentPageIndex }"
-        @click="projectStore.setCurrentPage(index)"
-      >
-        <div class="page-preview">
-          <div class="page-number">{{ page.pageNumber }}</div>
-          <div class="page-content-preview">
-            <div class="mini-page">
-              <div class="mini-content" v-for="(_, i) in page.content.slice(0,4)" :key="i" :style="{ width: (24 + (i%3)*18) + '%'}"></div>
+    <div
+      ref="splitContainerRef"
+      class="sidebar-content"
+      :class="{ 'pinned-sidebar': pinnedLayout, resizing: resizingSplit }"
+      :style="pinnedLayout ? pinnedGridStyle : undefined"
+    >
+      <div v-show="pinnedLayout || uiStore.leftSidebarTab === 'pages'" class="sidebar-pane pages-pane">
+        <div class="pages-grid" ref="pagesGridRef">
+          <div
+            v-for="(page, index) in projectStore.currentProject?.pages"
+            :key="page.id"
+            class="page-item"
+            :class="{
+              active: index === projectStore.currentPageIndex,
+              'asset-drop-target': dropTargetPageId === page.id,
+            }"
+            @click="projectStore.setCurrentPage(index)"
+            @dragover="onPageDragOver(page.id, $event)"
+            @dragleave="onPageDragLeave(page.id)"
+            @drop.stop="onPageAssetDrop(page.id, index, $event)"
+          >
+            <div class="page-preview">
+              <div class="page-number">{{ page.pageNumber }}</div>
+              <div class="page-content-preview">
+                <div class="mini-page" :style="{ backgroundColor: page.backgroundColor || '#ffffff' }">
+                  <div class="mini-content" v-for="(_, i) in page.content.slice(0,4)" :key="i" :style="{ width: (24 + (i%3)*18) + '%'}"></div>
+                  <div v-if="resolvedBorder(page).width > 0" class="mini-page-border" :style="miniBorderStyle(page)" />
+                </div>
+              </div>
+            </div>
+            <div class="page-info">
+              <div class="page-title" @dblclick.stop="startEdit(page)" v-if="editingId !== page.id">{{ pageTitle(page) }}</div>
+              <input v-else class="title-input" :value="editValue" @input="onEditInput($event)" @keydown.enter.prevent="commitEdit(page)" @keydown.esc.prevent="cancelEdit" @blur="commitEdit(page)" />
+              <div class="page-stats">{{ page.content.length }} items</div>
             </div>
           </div>
         </div>
-        <div class="page-info">
-          <div class="page-title" @dblclick.stop="startEdit(page)" v-if="editingId !== page.id">{{ pageTitle(page) }}</div>
-          <input v-else class="title-input" :value="editValue" @input="onEditInput($event)" @keydown.enter.prevent="commitEdit(page)" @keydown.esc.prevent="cancelEdit" @blur="commitEdit(page)" />
-          <div class="page-stats">{{ page.content.length }} items</div>
+
+        <div class="page-actions">
+          <div class="export-options">
+            <label><input type="checkbox" v-model="uiStore.showPageNumbers" /> Page numbers</label>
+            <label><input type="checkbox" v-model="uiStore.showFoldMarks" /> Fold marks</label>
+            <label><input type="checkbox" v-model="uiStore.showCutMarks" /> Cut marks</label>
+          </div>
+          <label class="export-resolution">
+            <span>Resolution</span>
+            <select :value="uiStore.exportDpi" :disabled="exporting" @change="updateExportDpi">
+              <option :value="150">150 DPI - draft</option>
+              <option :value="300">300 DPI - print</option>
+              <option :value="600">600 DPI - high</option>
+            </select>
+          </label>
+          <button @click="exportZine" class="export-button export-button--green" :disabled="exporting">
+            {{ exporting ? 'Generating...' : 'Export Zine for Printing' }}
+          </button>
         </div>
       </div>
-    </div>
 
-    <div class="page-actions">
-      <div class="export-options">
-        <label><input type="checkbox" v-model="uiStore.showPageNumbers" /> Page numbers</label>
-        <label><input type="checkbox" v-model="uiStore.showFoldMarks" /> Fold marks</label>
-        <label><input type="checkbox" v-model="uiStore.showCutMarks" /> Cut marks</label>
+      <div
+        v-if="pinnedLayout"
+        class="split-divider"
+        role="separator"
+        aria-orientation="horizontal"
+        aria-label="Resize pages and images panels"
+        :aria-valuenow="Math.round(uiStore.leftSidebarSplit * 100)"
+        aria-valuemin="25"
+        aria-valuemax="75"
+        tabindex="0"
+        @pointerdown="startSplitResize"
+        @dblclick="resetSplit"
+        @keydown="onSplitKeydown"
+      >
+        <GripHorizontal :size="15" />
       </div>
-      <button @click="exportZine" class="export-button export-button--green">Export Zine for Printing</button>
+
+      <div v-show="pinnedLayout || uiStore.leftSidebarTab === 'images'" class="sidebar-pane images-pane">
+        <ImageCatalog />
+      </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue';
+import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { useSortable } from '@vueuse/integrations/useSortable';
 import { useProjectStore } from '@/stores/project';
 import { useUIStore } from '@/stores/ui';
 import { useAssetStore } from '@/stores/assetStore';
 import { exportZineForTemplate } from '@/composables/useZineExport';
-import { ChevronRight, ChevronDown } from 'lucide-vue-next';
+import { ChevronRight, ChevronDown, GripHorizontal, Pin, PinOff } from 'lucide-vue-next';
+import ImageCatalog from '@/components/ImageCatalog.vue';
+import { getDraggedAssetId, hasDraggedAsset } from '@/utils/imageDrag';
+import { useToolsStore } from '@/stores/tools';
+import type { ZinePage } from '@/types';
+import { resolvePageBorder } from '@/utils/pageBorder';
 
 const projectStore = useProjectStore();
 const uiStore = useUIStore();
 const assetStore = useAssetStore();
+const toolsStore = useToolsStore();
 
 const editingId = ref<string | null>(null);
 const editValue = ref('');
+const dropTargetPageId = ref<string | null>(null);
+const splitContainerRef = ref<HTMLElement | null>(null);
+const resizingSplit = ref(false);
+const exporting = ref(false);
+const isMobile = ref(typeof window !== 'undefined' && window.matchMedia('(max-width: 900px)').matches);
+let tabSwitchTimer: ReturnType<typeof setTimeout> | null = null;
+let mobileMediaQuery: MediaQueryList | null = null;
+let previousBodyCursor = '';
+let previousBodyUserSelect = '';
 
 const pagesGridRef = ref<HTMLElement | null>(null);
 const pageIds = computed(() => projectStore.currentProject?.pages.map(p => p.id) ?? []);
+const pinnedLayout = computed(() => uiStore.imageCatalogPinned && !isMobile.value);
+const pinnedGridStyle = computed(() => ({
+  gridTemplateRows: `${uiStore.leftSidebarSplit}fr 10px ${1 - uiStore.leftSidebarSplit}fr`,
+}));
+const sidebarCount = computed(() => {
+  const imageCount = projectStore.currentProject?.assetIds?.length || 0;
+  if (pinnedLayout.value) return `${projectStore.pageCount}p / ${imageCount}i`;
+  return uiStore.leftSidebarTab === 'pages'
+    ? `${projectStore.pageCount} pages`
+    : `${imageCount} images`;
+});
+const sidebarCountTitle = computed(() => (
+  pinnedLayout.value
+    ? `${projectStore.pageCount} pages, ${projectStore.currentProject?.assetIds?.length || 0} images`
+    : sidebarCount.value
+));
+
+function resolvedBorder(page: ZinePage) {
+  const project = projectStore.currentProject;
+  return project ? resolvePageBorder(project, page) : { width: 0, color: '#000000' };
+}
+
+function miniBorderStyle(page: ZinePage) {
+  const border = resolvedBorder(page);
+  return {
+    borderColor: border.color,
+    borderWidth: `${Math.max(1, Math.min(6, border.width / 4))}px`,
+  };
+}
 
 useSortable(pagesGridRef, pageIds, {
   animation: 150,
@@ -103,11 +222,132 @@ function commitEdit(page: any): void {
 }
 function cancelEdit(): void { editingId.value = null; }
 
+function onPagesTabDragEnter(event: DragEvent) {
+  if (pinnedLayout.value || !hasDraggedAsset(event) || uiStore.leftSidebarTab === 'pages') return;
+  event.preventDefault();
+  cancelTabSwitch();
+  tabSwitchTimer = setTimeout(() => {
+    uiStore.leftSidebarTab = 'pages';
+    tabSwitchTimer = null;
+  }, 350);
+}
+
+function cancelTabSwitch() {
+  if (tabSwitchTimer) clearTimeout(tabSwitchTimer);
+  tabSwitchTimer = null;
+}
+
+function onPageDragOver(pageId: string, event: DragEvent) {
+  if (!hasDraggedAsset(event)) return;
+  event.preventDefault();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
+  dropTargetPageId.value = pageId;
+}
+
+function onPageDragLeave(pageId: string) {
+  if (dropTargetPageId.value === pageId) dropTargetPageId.value = null;
+}
+
+async function onPageAssetDrop(pageId: string, pageIndex: number, event: DragEvent) {
+  const assetId = getDraggedAssetId(event);
+  dropTargetPageId.value = null;
+  if (assetId == null) return;
+  event.preventDefault();
+  const asset = await assetStore.getAssetRecord(assetId);
+  if (!asset) return;
+  const contentId = projectStore.addImageAssetToPage(pageId, asset);
+  if (!contentId) return;
+  projectStore.setCurrentPage(pageIndex);
+  projectStore.selectContent(contentId);
+  toolsStore.setActiveTool('select');
+}
+
+function clearAssetDragState() {
+  cancelTabSwitch();
+  dropTargetPageId.value = null;
+}
+
+function toggleImageCatalogPin() {
+  const pinned = !uiStore.imageCatalogPinned;
+  uiStore.setImageCatalogPinned(pinned);
+  if (!pinned) uiStore.leftSidebarTab = 'images';
+}
+
+function startSplitResize(event: PointerEvent) {
+  if (!pinnedLayout.value || resizingSplit.value) return;
+  event.preventDefault();
+  resizingSplit.value = true;
+  previousBodyCursor = document.body.style.cursor;
+  previousBodyUserSelect = document.body.style.userSelect;
+  document.body.style.cursor = 'row-resize';
+  document.body.style.userSelect = 'none';
+  window.addEventListener('pointermove', onSplitResize);
+  window.addEventListener('pointerup', stopSplitResize, { once: true });
+  window.addEventListener('pointercancel', stopSplitResize, { once: true });
+}
+
+function onSplitResize(event: PointerEvent) {
+  const container = splitContainerRef.value;
+  if (!resizingSplit.value || !container) return;
+  const bounds = container.getBoundingClientRect();
+  if (!bounds.height) return;
+  const minPaneHeight = Math.min(160, bounds.height * 0.45);
+  const minRatio = minPaneHeight / bounds.height;
+  const split = Math.min(1 - minRatio, Math.max(minRatio, (event.clientY - bounds.top) / bounds.height));
+  uiStore.leftSidebarSplit = split;
+}
+
+function stopSplitResize() {
+  if (!resizingSplit.value) return;
+  resizingSplit.value = false;
+  uiStore.setLeftSidebarSplit(uiStore.leftSidebarSplit);
+  document.body.style.cursor = previousBodyCursor;
+  document.body.style.userSelect = previousBodyUserSelect;
+  window.removeEventListener('pointermove', onSplitResize);
+  window.removeEventListener('pointerup', stopSplitResize);
+  window.removeEventListener('pointercancel', stopSplitResize);
+}
+
+function resetSplit() {
+  uiStore.setLeftSidebarSplit(0.58);
+}
+
+function onSplitKeydown(event: KeyboardEvent) {
+  if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown' && event.key !== 'Home' && event.key !== 'End') return;
+  event.preventDefault();
+  if (event.key === 'Home') uiStore.setLeftSidebarSplit(0.25);
+  else if (event.key === 'End') uiStore.setLeftSidebarSplit(0.75);
+  else uiStore.setLeftSidebarSplit(uiStore.leftSidebarSplit + (event.key === 'ArrowDown' ? 0.03 : -0.03));
+}
+
+function updateMobileState(event: MediaQueryListEvent | MediaQueryList) {
+  isMobile.value = event.matches;
+  if (isMobile.value) stopSplitResize();
+}
+
+onMounted(() => {
+  window.addEventListener('dragend', clearAssetDragState);
+  window.addEventListener('drop', clearAssetDragState);
+  mobileMediaQuery = window.matchMedia('(max-width: 900px)');
+  updateMobileState(mobileMediaQuery);
+  mobileMediaQuery.addEventListener('change', updateMobileState);
+});
+
+onUnmounted(() => {
+  clearAssetDragState();
+  stopSplitResize();
+  window.removeEventListener('dragend', clearAssetDragState);
+  window.removeEventListener('drop', clearAssetDragState);
+  mobileMediaQuery?.removeEventListener('change', updateMobileState);
+  mobileMediaQuery = null;
+});
+
 async function exportZine(): Promise<void> {
   if (!projectStore.currentProject) {
     console.error('No current project to export.');
     return;
   }
+  exporting.value = true;
   try {
     const { images, pdfData, width, height } = await exportZineForTemplate(
       projectStore.currentProject,
@@ -116,7 +356,7 @@ async function exportZine(): Promise<void> {
         showPageNumbers: uiStore.showPageNumbers,
         showFoldMarks: uiStore.showFoldMarks,
         showCutMarks: uiStore.showCutMarks,
-        pixelRatio: 2,
+        dpi: uiStore.exportDpi,
       }
     );
     uiStore.exportImageWidth = width;
@@ -129,10 +369,15 @@ async function exportZine(): Promise<void> {
   } catch (error) {
     console.error('Export failed:', error);
     alert('Export failed. Please check the console for details.');
+  } finally {
+    exporting.value = false;
   }
 }
 
-// generatePDF moved to composable
+function updateExportDpi(event: Event): void {
+  uiStore.setExportDpi(Number((event.target as HTMLSelectElement).value));
+}
+
 </script>
 
 <style scoped>
@@ -145,8 +390,7 @@ async function exportZine(): Promise<void> {
   border-right: 1px solid var(--border-soft);
 }
 .page-list.collapsed { width: 40px; }
-.page-list.collapsed .pages-grid, .page-list.collapsed .page-actions, .page-list.collapsed .page-count { display: none; }
-.page-list.collapsed .page-list-header h3 { display: none; }
+.page-list.collapsed .sidebar-content, .page-list.collapsed .page-count, .page-list.collapsed .sidebar-tabs, .page-list.collapsed .pin-button { display: none; }
 
 .page-list-header {
   display: flex;
@@ -157,16 +401,93 @@ async function exportZine(): Promise<void> {
   border-bottom: 1px solid var(--border-soft);
 }
 
-.page-list-header h3 {
-  margin: 0;
-  font-size: 1rem;
-  font-weight: 600;
+.sidebar-tabs {
+  display: flex;
+  gap: 0.2rem;
+}
+
+.pin-button {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
   color: var(--ui-ink);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.pin-button:hover,
+.pin-button.active {
+  border-color: var(--border-soft);
+  background: var(--surface);
+}
+
+.sidebar-tab {
+  min-height: 32px;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--ui-ink);
+  cursor: pointer;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.sidebar-tab.active { border-color: var(--border); background: var(--surface); }
+
+.sidebar-content { flex: 1; min-height: 0; display: flex; }
+.sidebar-content.pinned-sidebar { display: grid; }
+.sidebar-pane { flex: 1; min-width: 0; min-height: 0; }
+.pages-pane { display: flex; flex-direction: column; }
+.images-pane { overflow: hidden; }
+.pinned-sidebar .images-pane { padding-top: 0.4rem; }
+
+.split-divider {
+  position: relative;
+  min-height: 10px;
+  color: #6b7280;
+  cursor: row-resize;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  touch-action: none;
+}
+
+.split-divider::before {
+  content: '';
+  position: absolute;
+  right: 0;
+  left: 0;
+  height: 1px;
+  background: var(--border-soft);
+}
+
+.split-divider svg {
+  position: relative;
+  z-index: 1;
+  background: var(--panel);
+}
+
+.split-divider:hover,
+.split-divider:focus-visible,
+.resizing .split-divider {
+  color: var(--ui-ink);
+  outline: none;
 }
 
 .page-count {
+  min-width: 0;
+  margin-left: auto;
   color: var(--ui-ink);
   font-size: 0.8rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .collapse-button { 
   border: none; 
@@ -238,6 +559,12 @@ async function exportZine(): Promise<void> {
   background: #e7ffe7;
 }
 
+.page-item.asset-drop-target {
+  border-color: var(--accent-green);
+  background: #e7ffe7;
+  box-shadow: 2px 2px 0 #000;
+}
+
 .page-preview {
   position: relative;
   width: 64px;
@@ -268,6 +595,7 @@ async function exportZine(): Promise<void> {
   gap: 1px;
 }
 .mini-page { background: #fff; border: 1px solid var(--border-soft); width: 100%; height: 100%; position: relative; }
+.mini-page-border { position: absolute; inset: 0; z-index: 1; box-sizing: border-box; border-style: solid; pointer-events: none; }
 .mini-content { height: 3px; background: var(--border); margin: 2px; }
 .mini-icon { position: absolute; right: 2px; bottom: 2px; width: 16px; height: 16px; opacity: 0.9; }
 
@@ -298,8 +626,27 @@ async function exportZine(): Promise<void> {
   margin-top: 0.75rem;
 }
 
-.export-options { display: flex; gap: 0.75rem; align-items: center; margin-bottom: 0.5rem; color: var(--ui-ink); }
+.export-options { display: flex; flex-wrap: wrap; gap: 0.5rem 0.75rem; align-items: center; margin-bottom: 0.5rem; color: var(--ui-ink); }
 .export-options label { display: inline-flex; gap: 0.35rem; align-items: center; font-size: 0.85rem; }
+
+.export-resolution {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.65rem;
+  color: var(--ui-ink);
+  font-size: 0.85rem;
+}
+
+.export-resolution select {
+  min-width: 128px;
+  padding: 0.35rem 0.4rem;
+  border: 1px solid var(--border-soft);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--ui-ink);
+}
 
 .export-button {
   width: 100%;
@@ -316,6 +663,7 @@ async function exportZine(): Promise<void> {
 }
 
 .export-button:hover { transform: translate(-1px,-1px); box-shadow: 3px 3px 0 #000; }
+.export-button:disabled { cursor: wait; opacity: 0.65; transform: none; box-shadow: 2px 2px 0 #000; }
 
 /* Mobile responsive page list */
 @media (max-width: 768px) {

@@ -1,11 +1,15 @@
 import { defineStore } from 'pinia';
 import { ref } from 'vue';
 
+const IMAGE_CATALOG_PINNED_KEY = 'zineMaker.imageCatalogPinned';
+const LEFT_SIDEBAR_SPLIT_KEY = 'zineMaker.leftSidebarSplit';
+const EXPORT_DPI_KEY = 'zineMaker.exportDpi';
+const SUPPORTED_EXPORT_DPI = [150, 300, 600] as const;
+
 export const useUIStore = defineStore('ui', () => {
   const showTemplateSelector = ref(true);
   const showPageList = ref(true);
   const showProperties = ref(true);
-  const showImageUploadModal = ref(false);
   const showExportModal = ref(false);
   const showProjectsModal = ref(false);
   const exportImageData = ref('');
@@ -21,7 +25,11 @@ export const useUIStore = defineStore('ui', () => {
   const showPageNumbers = ref(true);
   const showFoldMarks = ref(true);
   const showCutMarks = ref(true);
+  const exportDpi = ref(readExportDpi());
   const showStorageNotice = ref(false);
+  const leftSidebarTab = ref<'pages' | 'images'>('pages');
+  const imageCatalogPinned = ref(readBooleanPreference(IMAGE_CATALOG_PINNED_KEY, false));
+  const leftSidebarSplit = ref(readNumberPreference(LEFT_SIDEBAR_SPLIT_KEY, 0.58));
 
   function hideTemplateSelector(): void {
     showTemplateSelector.value = false;
@@ -61,6 +69,25 @@ export const useUIStore = defineStore('ui', () => {
   function togglePageListCollapsed(): void {
     pageListCollapsed.value = !pageListCollapsed.value;
   }
+  function openImageCatalog(): void {
+    showPageList.value = true;
+    pageListCollapsed.value = false;
+    leftSidebarTab.value = 'images';
+  }
+  function setImageCatalogPinned(pinned: boolean): void {
+    imageCatalogPinned.value = pinned;
+    writePreference(IMAGE_CATALOG_PINNED_KEY, String(pinned));
+  }
+  function setLeftSidebarSplit(split: number): void {
+    leftSidebarSplit.value = Math.min(0.75, Math.max(0.25, split));
+    writePreference(LEFT_SIDEBAR_SPLIT_KEY, String(leftSidebarSplit.value));
+  }
+  function setExportDpi(dpi: number): void {
+    exportDpi.value = SUPPORTED_EXPORT_DPI.includes(dpi as typeof SUPPORTED_EXPORT_DPI[number])
+      ? dpi
+      : 300;
+    writePreference(EXPORT_DPI_KEY, String(exportDpi.value));
+  }
   function togglePropertiesCollapsed(): void {
     propertiesCollapsed.value = !propertiesCollapsed.value;
   }
@@ -76,7 +103,6 @@ export const useUIStore = defineStore('ui', () => {
     showTemplateSelector,
     showPageList,
     showProperties,
-    showImageUploadModal,
     showExportModal,
     showProjectsModal,
     exportImageData,
@@ -92,7 +118,11 @@ export const useUIStore = defineStore('ui', () => {
     showPageNumbers,
     showFoldMarks,
     showCutMarks,
+    exportDpi,
     showStorageNotice,
+    leftSidebarTab,
+    imageCatalogPinned,
+    leftSidebarSplit,
     hideTemplateSelector,
     showTemplateSelectorModal,
     openProjectsModal,
@@ -103,8 +133,47 @@ export const useUIStore = defineStore('ui', () => {
     setCanvasOffset,
     requestFit,
     togglePageListCollapsed,
+    openImageCatalog,
+    setImageCatalogPinned,
+    setLeftSidebarSplit,
+    setExportDpi,
     togglePropertiesCollapsed,
     openStorageNotice,
     closeStorageNotice
   };
 });
+
+function readBooleanPreference(key: string, fallback: boolean): boolean {
+  try {
+    const value = localStorage.getItem(key);
+    return value === null ? fallback : value === 'true';
+  } catch {
+    return fallback;
+  }
+}
+
+function readNumberPreference(key: string, fallback: number): number {
+  try {
+    const value = Number(localStorage.getItem(key));
+    return Number.isFinite(value) && value >= 0.25 && value <= 0.75 ? value : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function readExportDpi(): number {
+  try {
+    const value = Number(localStorage.getItem(EXPORT_DPI_KEY));
+    return SUPPORTED_EXPORT_DPI.includes(value as typeof SUPPORTED_EXPORT_DPI[number]) ? value : 300;
+  } catch {
+    return 300;
+  }
+}
+
+function writePreference(key: string, value: string): void {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // The setting remains active for the current session when storage is unavailable.
+  }
+}

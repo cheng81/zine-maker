@@ -1,5 +1,7 @@
 <template>
   <div class="transform-properties">
+    <p v-if="hasSpread">Spread images fill their pages. Unlink the spread to move or resize either half.</p>
+    <template v-else>
     <div class="property-section">
       <h4>Transform</h4>
       
@@ -42,6 +44,21 @@
           />
         </div>
       </div>
+
+      <label
+        v-if="singleImage"
+        class="aspect-ratio-lock"
+        :class="{ unavailable: !canLockAspectRatio && !lockAspectRatio }"
+        :title="aspectRatioTitle"
+      >
+        <input
+          type="checkbox"
+          :checked="lockAspectRatio"
+          :disabled="!lockAspectRatio && !canLockAspectRatio"
+          @change="toggleAspectRatioLock"
+        />
+        Lock aspect ratio
+      </label>
 
       <div class="property-group">
         <label>Rotation</label>
@@ -112,14 +129,17 @@
         </button>
       </div>
     </div>
+    </template>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue';
-import type { ZineContent } from '@/types';
+import { computed, ref, watch } from 'vue';
+import type { ImageProperties, ZineContent } from '@/types';
 import NumberInput from './NumberInput.vue';
 import { useProjectStore } from '@/stores/project';
+import { useAssetStore } from '@/stores/assetStore';
+import { isSpreadImage } from '@/utils/imageSpread';
 
 interface Props {
   content: ZineContent[];
@@ -132,6 +152,35 @@ interface Emits {
 const props = defineProps<Props>();
 const emit = defineEmits<Emits>();
 const projectStore = useProjectStore();
+const assetStore = useAssetStore();
+const hasSpread = computed(() => props.content.some(isSpreadImage));
+const originalDimensions = ref<{ width: number; height: number } | null>(null);
+const loadingOriginalDimensions = ref(false);
+let dimensionRequest = 0;
+
+const singleImage = computed(() => (
+  props.content.length === 1 && props.content[0].type === 'image' ? props.content[0] : null
+));
+const imageProperties = computed(() => singleImage.value?.properties as ImageProperties | undefined);
+const lockAspectRatio = computed(() => Boolean(imageProperties.value?.lockAspectRatio));
+const canLockAspectRatio = computed(() => Boolean(originalDimensions.value));
+const aspectRatioTitle = computed(() => {
+  if (loadingOriginalDimensions.value) return 'Reading original image dimensions';
+  if (!canLockAspectRatio.value && !lockAspectRatio.value) return 'Original image dimensions are unavailable';
+  return 'Keep the original image proportions';
+});
+
+watch(
+  [
+    () => singleImage.value?.id,
+    () => imageProperties.value?.assetId,
+    () => imageProperties.value?.src,
+    () => imageProperties.value?.originalWidth,
+    () => imageProperties.value?.originalHeight,
+  ],
+  () => loadOriginalDimensions(),
+  { immediate: true }
+);
 
 const transformData = computed(() => {
   if (props.content.length === 0) {
@@ -154,11 +203,92 @@ const transformData = computed(() => {
 
 function updateTransform(property: keyof ZineContent, value: number) {
   if (props.content.length === 1) {
-    emit('update', props.content[0].id, { [property]: value });
+    const content = props.content[0];
+    const updates: Partial<ZineContent> = { [property]: value };
+    if (content.type === 'image' && lockAspectRatio.value && (property === 'width' || property === 'height')) {
+      const dimensions = originalDimensions.value;
+      if (!dimensions) return;
+      const ratio = dimensions.width / dimensions.height;
+      if (property === 'width') updates.height = roundPixels(value / ratio);
+      else updates.width = roundPixels(value * ratio);
+    }
+    emit('update', content.id, updates);
   } else {
     // For multi-selection, apply to all
     emit('update', 'multi', { [property]: value });
   }
+}
+
+function toggleAspectRatioLock(event: Event) {
+  const image = singleImage.value;
+  const properties = imageProperties.value;
+  if (!image || !properties) return;
+
+  const locked = (event.target as HTMLInputElement).checked;
+  const dimensions = originalDimensions.value;
+  if (locked && !dimensions) return;
+
+  const updates: Partial<ZineContent> = {
+    properties: {
+      ...properties,
+      lockAspectRatio: locked,
+      ...(dimensions ? {
+        originalWidth: dimensions.width,
+        originalHeight: dimensions.height,
+      } : {}),
+    },
+  };
+  if (locked && dimensions) {
+    updates.height = roundPixels(image.width * dimensions.height / dimensions.width);
+  }
+  emit('update', image.id, updates);
+}
+
+async function loadOriginalDimensions() {
+  const request = ++dimensionRequest;
+  originalDimensions.value = null;
+  loadingOriginalDimensions.value = false;
+  const properties = imageProperties.value;
+  if (!properties) return;
+
+  if (isValidDimensions(properties.originalWidth, properties.originalHeight)) {
+    originalDimensions.value = { width: properties.originalWidth!, height: properties.originalHeight! };
+    return;
+  }
+
+  loadingOriginalDimensions.value = true;
+  try {
+    let dimensions: { width: number; height: number } | null = null;
+    if (typeof properties.assetId === 'number') {
+      const asset = await assetStore.getAssetRecord(properties.assetId);
+      if (asset) dimensions = { width: asset.width, height: asset.height };
+    }
+    if (!dimensions && properties.src) dimensions = await imageDimensions(properties.src);
+    if (request === dimensionRequest && dimensions && isValidDimensions(dimensions.width, dimensions.height)) {
+      originalDimensions.value = dimensions;
+    }
+  } catch {
+    // The checkbox remains unavailable when the original source cannot be read.
+  } finally {
+    if (request === dimensionRequest) loadingOriginalDimensions.value = false;
+  }
+}
+
+function imageDimensions(src: string): Promise<{ width: number; height: number }> {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve({ width: image.naturalWidth, height: image.naturalHeight });
+    image.onerror = () => reject(new Error('Image dimensions could not be read.'));
+    image.src = src;
+  });
+}
+
+function isValidDimensions(width?: number, height?: number): boolean {
+  return Number.isFinite(width) && Number.isFinite(height) && Number(width) > 0 && Number(height) > 0;
+}
+
+function roundPixels(value: number): number {
+  return Math.max(1, Math.round(value * 100) / 100);
 }
 
 function updateRotation(event: Event) {
@@ -312,6 +442,21 @@ function flipVertical() {
   grid-template-columns: 1fr 1fr;
   gap: 0.75rem;
   margin-bottom: 0.75rem;
+}
+
+.aspect-ratio-lock {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin: -0.15rem 0 0.9rem;
+  color: #4b5563;
+  cursor: pointer;
+  font-size: 0.8rem;
+}
+
+.aspect-ratio-lock.unavailable {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 label {

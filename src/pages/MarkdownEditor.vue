@@ -366,7 +366,7 @@ async function exportZine() {
         showPageNumbers: true,
         showFoldMarks: true,
         showCutMarks: true,
-        pixelRatio: 2,
+        dpi: uiStore.exportDpi,
       }
     );
     

@@ -185,6 +185,45 @@ export const useTemplatesStore = defineStore('templates', () => {
     }
     ,
     {
+      id: 'accordion-16-din-a4-spiral',
+      name: 'Accordion 16 Spiral (DIN A4)',
+      format: 'accordion',
+      pageSize: 'a4',
+      orientation: 'portrait',
+      pageCount: 16,
+      description: '16-page one-sheet accordion (single-sided) from DIN A4-sized paper with a spiral page disposition.',
+      foldInstructions: 'Print single-sided. Cut along the three horizontal lines, then accordion fold following the spiral order.',
+      printLayout: {
+        sheetWidth: 595,
+        sheetHeight: 842,
+        pagePositions: [
+          // 4x4 grid, portrait tiles width/4xheight/4. Rows: 3 2 1 16 / 4 5 14 15 / 7 6 13 12 / 8 9 10 11
+          // Row 1 (y=0, rotated 180)
+          { pageNumber: 3,  x:   0, y:   0, width: 595/4, height: 842/4, rotation: 180, isFlipped: false, side: 'front' },
+          { pageNumber: 2,  x: 595/4, y:   0, width: 595/4, height: 842/4, rotation: 180, isFlipped: false, side: 'front' },
+          { pageNumber: 1,  x: 595/2, y:   0, width: 595/4, height: 842/4, rotation: 180, isFlipped: false, side: 'front' },
+          { pageNumber: 16, x: 595/4*3, y:   0, width: 595/4, height: 842/4, rotation: 180, isFlipped: false, side: 'front' },
+          // Row 2 (y=842/4)
+          { pageNumber: 4,  x:   0, y: 842/4, width: 595/4, height: 842/4, rotation: 0, isFlipped: false, side: 'front' },
+          { pageNumber: 5,  x: 595/4, y: 842/4, width: 595/4, height: 842/4, rotation: 0, isFlipped: false, side: 'front' },
+          { pageNumber: 14, x: 595/2, y: 842/4, width: 595/4, height: 842/4, rotation: 0, isFlipped: false, side: 'front' },
+          { pageNumber: 15, x: 595/4*3, y: 842/4, width: 595/4, height: 842/4, rotation: 0, isFlipped: false, side: 'front' },
+          // Row 3 (y=842/2, rotated 180)
+          { pageNumber: 7,  x:   0, y: 842/2, width: 595/4, height: 842/4, rotation: 180, isFlipped: false, side: 'front' },
+          { pageNumber: 6,  x: 595/4, y: 842/2, width: 595/4, height: 842/4, rotation: 180, isFlipped: false, side: 'front' },
+          { pageNumber: 13, x: 595/2, y: 842/2, width: 595/4, height: 842/4, rotation: 180, isFlipped: false, side: 'front' },
+          { pageNumber: 12, x: 595/4*3, y: 842/2, width: 595/4, height: 842/4, rotation: 180, isFlipped: false, side: 'front' },
+          // Row 4 (y=842/4*3)
+          { pageNumber: 8,  x:   0, y: 842/4*3, width: 595/4, height: 842/4, rotation: 0, isFlipped: false, side: 'front' },
+          { pageNumber: 9,  x: 595/4, y: 842/4*3, width: 595/4, height: 842/4, rotation: 0, isFlipped: false, side: 'front' },
+          { pageNumber: 10, x: 595/2, y: 842/4*3, width: 595/4, height: 842/4, rotation: 0, isFlipped: false, side: 'front' },
+          { pageNumber: 11, x: 595/4*3, y: 842/4*3, width: 595/4, height: 842/4, rotation: 0, isFlipped: false, side: 'front' }
+        ]
+      },
+      pageCanvas: { width: 595/4, height: 842/4 }
+    }
+    ,
+    {
       id: 'accordion-16-letter-alt',
       name: 'Accordion 16 Window (Letter)',
       format: 'accordion',

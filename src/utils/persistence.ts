@@ -1,8 +1,7 @@
-import { openDB, type IDBPDatabase } from 'idb';
+import type { IDBPDatabase } from 'idb';
 import type { ZineProject } from '@/types';
-
-const DB_NAME = 'ZineMakerDB';
-const PROJECTS_STORE_NAME = 'projects';
+import { ASSETS_STORE_NAME, openZineDatabase, PROJECTS_STORE_NAME } from '@/utils/database';
+import { collectReferencedAssetIds, migrateProjectAssetCatalog } from '@/utils/projectAssets';
 const LAST_PROJECT_ID_KEY = 'lastOpenProjectId';
 
 let db: IDBPDatabase | null = null;
@@ -10,20 +9,7 @@ let db: IDBPDatabase | null = null;
 async function getDb(): Promise<IDBPDatabase> {
   if (db) return db;
 
-  db = await openDB(DB_NAME, 2, {
-    upgrade(database, oldVersion) {
-      if (oldVersion < 1) {
-        if (!database.objectStoreNames.contains('assets')) {
-          database.createObjectStore('assets', { keyPath: 'id', autoIncrement: true });
-        }
-      }
-      if (oldVersion < 2) {
-        if (!database.objectStoreNames.contains(PROJECTS_STORE_NAME)) {
-          database.createObjectStore(PROJECTS_STORE_NAME, { keyPath: 'id' });
-        }
-      }
-    },
-  });
+  db = await openZineDatabase();
   return db;
 }
 
@@ -51,11 +37,7 @@ export async function loadProject(id: string): Promise<ZineProject | undefined> 
   raw.createdAt = new Date(raw.createdAt);
   raw.modifiedAt = new Date(raw.modifiedAt);
 
-  // Add formatVersion if missing (auto-migrate old projects)
-  // AND save the migration back to database
-  if (!raw.formatVersion) {
-    raw.formatVersion = 2;
-    // Save the migrated version back to database
+  if (migrateProjectAssetCatalog(raw)) {
     const tx = db.transaction(PROJECTS_STORE_NAME, 'readwrite');
     await tx.store.put(raw);
     await tx.done;
@@ -68,7 +50,6 @@ export async function getAllProjects(): Promise<ZineProject[]> {
   const db = await getDb();
   const projects = await db.getAll(PROJECTS_STORE_NAME);
 
-  // Migrate any projects missing formatVersion
   const projectsToUpdate: any[] = [];
 
   projects.forEach((p: any) => {
@@ -76,11 +57,7 @@ export async function getAllProjects(): Promise<ZineProject[]> {
     p.createdAt = new Date(p.createdAt);
     p.modifiedAt = new Date(p.modifiedAt);
 
-    // Add formatVersion if missing
-    if (!p.formatVersion) {
-      p.formatVersion = 2;
-      projectsToUpdate.push(p);
-    }
+    if (migrateProjectAssetCatalog(p)) projectsToUpdate.push(p);
   });
 
   // Save any migrated projects back to database
@@ -97,9 +74,15 @@ export async function getAllProjects(): Promise<ZineProject[]> {
 
 export async function deleteProject(id: string): Promise<void> {
   const db = await getDb();
+  const project: ZineProject | undefined = await db.get(PROJECTS_STORE_NAME, id);
   const tx = db.transaction(PROJECTS_STORE_NAME, 'readwrite');
   await tx.store.delete(id);
   await tx.done;
+
+  if (project) {
+    const assetIds = [...new Set([...(project.assetIds || []), ...collectReferencedAssetIds(project)])];
+    for (const assetId of assetIds) await deleteAssetIfUnreferenced(assetId, id);
+  }
 }
 
 export async function renameProject(id: string, newName: string): Promise<void> {
@@ -118,6 +101,22 @@ export async function deleteAllProjects(): Promise<void> {
   const tx = db.transaction(PROJECTS_STORE_NAME, 'readwrite');
   await tx.store.clear();
   await tx.done;
+  const assetTx = db.transaction(ASSETS_STORE_NAME, 'readwrite');
+  await assetTx.store.clear();
+  await assetTx.done;
+}
+
+export async function deleteAssetIfUnreferenced(assetId: number, ignoreProjectId?: string): Promise<boolean> {
+  const db = await getDb();
+  const projects = await db.getAll(PROJECTS_STORE_NAME) as ZineProject[];
+  const isReferenced = projects.some(project => {
+    if (project.id === ignoreProjectId) return false;
+    return (project.assetIds || []).includes(assetId)
+      || collectReferencedAssetIds(project).includes(assetId);
+  });
+  if (isReferenced) return false;
+  await db.delete(ASSETS_STORE_NAME, assetId);
+  return true;
 }
 
 export async function saveLastOpenProjectId(id: string): Promise<void> {

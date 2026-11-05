@@ -1,12 +1,15 @@
 import Konva from 'konva';
 import jsPDF from 'jspdf';
 import type { ZineProject, ZineContent, ZineTemplate, ShapeProperties, TextProperties, ImageProperties } from '@/types';
+import { pageBorderSegments, resolvePageBorder, suppressedSpreadBorderEdges } from '@/utils/pageBorder';
+import { toKonvaImageCrop } from '@/utils/imageCrop';
 
 export interface ExportOptions {
   showPageNumbers?: boolean;
   showFoldMarks?: boolean;
   showCutMarks?: boolean;
   pixelRatio?: number;
+  dpi?: number;
   bleed?: number; // optional sheet bleed in points (72dpi). default 0
 }
 
@@ -24,9 +27,13 @@ export async function exportZineForTemplate(
   const currentTemplate = templatesStore.getTemplate(project.template.id);
   const template = currentTemplate || project.template as ZineTemplate;
 
+  // Canvas text metrics are only reliable once all registered custom fonts are ready.
+  await document.fonts.ready;
+
   const width = template.printLayout.sheetWidth;
   const height = template.printLayout.sheetHeight;
-  const pixelRatio = options.pixelRatio ?? 2;
+  const dpi = Number.isFinite(options.dpi) && Number(options.dpi) > 0 ? Number(options.dpi) : 300;
+  const pixelRatio = options.pixelRatio ?? dpi / 72;
 
   // Use the current template's page positions (which have the corrected layout)
   let pagePositions = template.printLayout.pagePositions;
@@ -73,6 +80,13 @@ export async function exportZineForTemplate(
           sorted.map(content => createKonvaNode(content, getAsset).catch(() => null))
         ).then(nodes => {
           for (const node of nodes) { if (node) group.add(node as Konva.Shape); }
+          if (page.pageNumber) {
+            const border = resolvePageBorder(project, page);
+            const segments = pageBorderSegments(pagePos.width, pagePos.height, border, suppressedSpreadBorderEdges(project, page));
+            for (const { edge, ...config } of segments) {
+              group.add(new Konva.Line({ ...config, id: `page-border-${edge}` }));
+            }
+          }
         });
         nodePromises.push(pagePromise);
 
@@ -230,7 +244,12 @@ export async function exportZineForTemplate(
     }
 
     const pdfData = await generatePDF(images, width, height);
-    return { images, pdfData, width: width * pixelRatio, height: height * pixelRatio };
+    return {
+      images,
+      pdfData,
+      width: Math.round(width * pixelRatio),
+      height: Math.round(height * pixelRatio),
+    };
   } finally {
     document.body.removeChild(tempContainer);
   }
@@ -261,10 +280,29 @@ export async function createKonvaNode(content: ZineContent, getAsset: GetAssetFn
     return new Promise((resolve, reject) => {
       const imageObj = new window.Image();
       imageObj.crossOrigin = 'anonymous';
-      imageObj.onload = () => resolve(new Konva.Image({ ...common, image: imageObj, opacity: p.opacity }));
-      imageObj.onerror = () => reject(new Error(`Failed to load image from src: ${p.src}`));
+      let objectUrl: string | null = null;
+      imageObj.onload = () => {
+        if (objectUrl) URL.revokeObjectURL(objectUrl);
+        resolve(new Konva.Image({
+          ...common,
+          image: imageObj,
+          opacity: p.opacity,
+          crop: toKonvaImageCrop(p.crop, imageObj.naturalWidth, imageObj.naturalHeight),
+        }));
+      };
+      imageObj.onerror = () => {
+        if (objectUrl) URL.revokeObjectURL(objectUrl);
+        reject(new Error(`Failed to load image from src: ${p.src}`));
+      };
       if (p.assetId) {
-        getAsset(p.assetId).then(file => { if (file) imageObj.src = URL.createObjectURL(file); else reject(new Error(`Asset not found: ${p.assetId}`)); });
+        getAsset(p.assetId).then(file => {
+          if (file) {
+            objectUrl = URL.createObjectURL(file);
+            imageObj.src = objectUrl;
+          } else {
+            reject(new Error(`Asset not found: ${p.assetId}`));
+          }
+        });
       } else {
         imageObj.src = p.src;
       }
@@ -298,5 +336,3 @@ export async function generatePDF(images: string[], width: number, height: numbe
   });
   return pdf.output('datauristring');
 }
-
-
